@@ -75,6 +75,10 @@ powershell -ExecutionPolicy Bypass -File .\native\bootstrap.ps1
 4. Click `Download`.
 5. Watch progress in the `Downloads` panel.
 
+## Roadmap
+
+See [docs/ROADMAP.md](docs/ROADMAP.md) for the VDH-inspired feature backlog and maturity plan.
+
 ## Limits
 
 This is not a full Video DownloadHelper or yt-dlp replacement. It detects media URLs visible to the browser and passes them to local yt-dlp. It does not implement site extractors, DRM bypass, cookie decryption, or in-extension FFmpeg muxing.
