@@ -1,0 +1,9 @@
+﻿{
+    "name":  "com.vdhlite.ytdlp",
+    "description":  "VDH Lite Custom yt-dlp native host",
+    "path":  "C:\\Users\\LeeWei\\Documents\\VDH-Lite\\native\\com.vdhlite.ytdlp.cmd",
+    "type":  "stdio",
+    "allowed_origins":  [
+                            "chrome-extension://biohojdpjgpahmcahblcdiafgckglinn/"
+                        ]
+}

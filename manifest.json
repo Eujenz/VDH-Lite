@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwxfb7lV03zBvElsbnn/eRyVe0neOLjvRv9Qm6uh0N9kMZuYUMf/fFiFfRx5HtJ2kQxYTyskh+Dn3YCXhocsY2vVcLPabD2lPQKUw15Wa8Rpzpg003JSxM0nNB2jzTPrLdTVLzgEwhpiR63UskgkIiF/TAjBuM7hSzna8NI4xuS/CqO+l0nLnYjJHoFMThME9cF2jBtcwRx2An+eLPhG8HElIlgVlqLjI6O+TTaWX9bjay4/HpESpnk7IuzFmxJWqouovrpdXMyBCCxryxYrkMHeZ1z09qaSkm/icLIcwggeiAeoPxpeK1srVEaTHWbO3Tvd+GoNPnuev3GqNyusrLwIDAQAB",
+  "name": "VDH Lite Custom",
+  "version": "0.1.0",
+  "description": "A permission-conscious media request detector inspired by Video DownloadHelper architecture.",
+  "action": {
+    "default_popup": "src/popup.html",
+    "default_title": "VDH Lite Custom"
+  },
+  "background": {
+    "service_worker": "src/service_worker.js",
+    "type": "module"
+  },
+  "permissions": [
+    "activeTab",
+    "clipboardWrite",
+    "downloads",
+    "nativeMessaging",
+    "scripting",
+    "storage",
+    "webRequest"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ]
+}

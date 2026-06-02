@@ -1,0 +1,3 @@
+VDH Lite Custom Alpha 0.1.0
+Fixed extension ID: biohojdpjgpahmcahblcdiafgckglinn
+Target: Windows + Chrome

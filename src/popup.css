@@ -1,0 +1,234 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  width: 500px;
+  max-width: 100%;
+  margin: 0;
+  font: 13px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  color: #172033;
+  background: #f7f8fb;
+}
+
+header,
+footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px;
+  background: #ffffff;
+  border-bottom: 1px solid #d8deea;
+}
+
+.header-actions {
+  display: flex;
+  gap: 6px;
+}
+
+footer {
+  border-top: 1px solid #d8deea;
+  border-bottom: 0;
+}
+
+main {
+  padding: 10px;
+  max-height: 520px;
+  overflow: auto;
+}
+
+.settings {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.deps-status {
+  grid-column: 1 / -1;
+  color: #5c6880;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.quality-bar {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.quality-bar label,
+.panel-title {
+  color: #5c6880;
+  font-size: 12px;
+}
+
+.quality-bar select {
+  min-width: 0;
+  border: 1px solid #a8b2c7;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font: inherit;
+  background: #ffffff;
+}
+
+.jobs-panel {
+  margin-bottom: 10px;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.job {
+  padding: 8px;
+  margin-top: 6px;
+  border: 1px solid #d8deea;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.job-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.job.failed {
+  border-color: #f0b4b4;
+  background: #fff7f7;
+}
+
+.job.finished {
+  border-color: #b7ddc3;
+}
+
+.progress {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e3e8f2;
+}
+
+.progress span {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: #2563eb;
+}
+
+.settings label {
+  grid-column: 1 / -1;
+  color: #5c6880;
+  font-size: 12px;
+}
+
+.settings input {
+  min-width: 0;
+  border: 1px solid #a8b2c7;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font: inherit;
+}
+
+button {
+  border: 1px solid #a8b2c7;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #172033;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #eef3ff;
+}
+
+.icon-button {
+  width: 32px;
+  min-width: 32px;
+  padding: 6px;
+  font-size: 15px;
+  line-height: 1;
+}
+
+#status {
+  margin-bottom: 8px;
+  color: #5c6880;
+}
+
+#items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+#command-panel {
+  margin-top: 10px;
+}
+
+#command-panel label {
+  display: block;
+  margin-bottom: 4px;
+  color: #5c6880;
+  font-size: 12px;
+}
+
+#command-output {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid #a8b2c7;
+  border-radius: 6px;
+  padding: 8px;
+  font: 12px/1.4 Consolas, "Courier New", monospace;
+  color: #172033;
+  background: #ffffff;
+}
+
+.item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  padding: 8px;
+  margin-bottom: 8px;
+  border: 1px solid #d8deea;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.actions {
+  display: flex;
+  align-items: start;
+  gap: 6px;
+}
+
+.actions button {
+  white-space: nowrap;
+}
+
+.url {
+  overflow-wrap: anywhere;
+}
+
+.meta {
+  color: #6a7488;
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.badge {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: #eaf1ff;
+  color: #1f4ea8;
+  font-size: 12px;
+}

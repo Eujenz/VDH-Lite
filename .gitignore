@@ -1,0 +1,28 @@
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Build/package output
+dist/
+*.zip
+*.crx
+*.pem
+
+# Python/runtime cache
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Native host local runtime output
+*.log
+jobs.json
+progress-*.txt
+exit-*.txt
+job-*.json
+
+# Download leftovers
+*.part
+*.ytdl

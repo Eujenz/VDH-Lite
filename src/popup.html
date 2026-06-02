@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>VDH Lite Custom</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <header>
+      <strong>VDH Lite Custom</strong>
+      <div class="header-actions">
+        <button id="grant" type="button">Grant site</button>
+        <button id="settings-toggle" class="icon-button" type="button" title="Settings" aria-label="Settings">&#9881;</button>
+      </div>
+    </header>
+    <main>
+      <div id="status">Loading...</div>
+      <section id="settings-panel" class="settings" hidden>
+        <label for="download-dir">Save videos to</label>
+        <input id="download-dir" type="text" placeholder="%USERPROFILE%\\Downloads\\VDH Lite">
+        <button id="reset-dir" type="button">Reset</button>
+        <button id="test-native" type="button">Test yt-dlp</button>
+        <div id="deps-status" class="deps-status">Checking dependencies...</div>
+        <button id="install-deps" type="button">Install missing</button>
+      </section>
+      <section class="quality-bar">
+        <label for="quality-select">Quality</label>
+        <select id="quality-select"></select>
+        <button id="run-selected" type="button">Download</button>
+      </section>
+      <section id="jobs-panel" class="jobs-panel">
+        <div class="panel-header">
+          <div class="panel-title">Downloads</div>
+          <button id="clear-jobs" type="button">Clear history</button>
+        </div>
+        <div id="jobs"></div>
+      </section>
+      <ul id="items"></ul>
+      <section id="command-panel" hidden>
+        <label for="command-output">Download details</label>
+        <textarea id="command-output" readonly rows="4"></textarea>
+      </section>
+    </main>
+    <footer>
+      <button id="refresh" type="button">Refresh</button>
+      <button id="clear" type="button">Clear</button>
+    </footer>
+    <script src="popup.js"></script>
+  </body>
+</html>
