@@ -11,7 +11,7 @@ import winreg
 from datetime import datetime
 from pathlib import Path
 
-HOST_VERSION = "0.1.0"
+HOST_VERSION = "1.0.0"
 DEFAULT_DOWNLOAD_DIR = Path.home() / "Downloads" / "VDH Lite"
 LOG_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "VDH Lite Custom"
 LOG_FILE = LOG_DIR / "yt-dlp-host.log"
