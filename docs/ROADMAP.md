@@ -1,10 +1,12 @@
-# VDH Lite Custom Roadmap
+# VDH Lite Roadmap
 
-This roadmap tracks the work needed to grow VDH Lite Custom from a personal alpha tool into a mature Chrome extension. It borrows product patterns from Video DownloadHelper while keeping this project centered on yt-dlp, explicit permissions, and a local native host.
+This roadmap tracks the work needed to grow VDH Lite from a personal alpha tool into a mature Chrome extension. It borrows product patterns from Video DownloadHelper while keeping this project centered on yt-dlp, explicit permissions, and a local native host.
+
+For implementation sequencing, agent task boundaries, target files, and acceptance criteria, use [AGENT_ROADMAP.md](AGENT_ROADMAP.md).
 
 ## Product Direction
 
-VDH Lite Custom should feel like a practical downloader companion:
+VDH Lite should feel like a practical downloader companion:
 
 - Detect the right media candidate without making the user inspect raw URLs.
 - Present quality, format, size, speed, ETA, and download state clearly.

@@ -1,7 +1,20 @@
+param(
+  [string[]]$ExtensionIds = @(),
+  [ValidateSet("Chrome", "Edge")]
+  [string[]]$Browsers = @("Chrome")
+)
+
 $ErrorActionPreference = "Stop"
 
-Write-Host "Installing VDH Lite Custom native host..."
-powershell -ExecutionPolicy Bypass -File (Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "install-native-host.ps1")
+Write-Host "Installing VDH Lite native host..."
+$installScript = Join-Path (Split-Path -Parent $MyInvocation.MyCommand.Path) "install-native-host.ps1"
+$installArgs = @("-ExecutionPolicy", "Bypass", "-File", $installScript, "-Browsers")
+$installArgs += $Browsers
+if ($ExtensionIds.Count -gt 0) {
+  $installArgs += "-ExtensionIds"
+  $installArgs += $ExtensionIds
+}
+powershell @installArgs
 
 Write-Host "Checking yt-dlp..."
 if (-not (Get-Command yt-dlp -ErrorAction SilentlyContinue)) {

@@ -1,41 +1,40 @@
-# VDH Lite Custom
+# VDH Lite
 
-A Chrome MV3 media detector and yt-dlp launcher inspired by the Video DownloadHelper workflow.
+A Chrome Manifest V3 media detector and local `yt-dlp` launcher inspired by Video DownloadHelper and Parabolic.
 
-This repository is the editable source for the extension. Load this folder directly with Chrome's
-`Load unpacked` during development.
+VDH Lite is built as a community-ready browser extension plus a local native host. The browser extension detects browser-visible media candidates and shows the popup UI. The native host runs on the user's machine and starts `yt-dlp`/`ffmpeg` through Chrome Native Messaging.
 
 ## Project Layout
 
 ```text
 VDH-Lite/
-  manifest.json                 Chrome extension manifest
-  src/
-    service_worker.js           Media request detection and native-message bridge
-    content_script.js           DOM/performance media scanner
-    page_probe.js               fetch/XHR probe injected into the page context
-    popup.html                  Extension popup shell
-    popup.css                   Popup UI styles
-    popup.js                    Popup UI, quality selection, job status
-  native/
-    yt_dlp_host.py              Chrome Native Messaging host
-    yt_dlp_runner.py            yt-dlp background process runner
-    bootstrap.ps1               Installs native host and dependencies
-    install-native-host.ps1     Registers the native host for this extension ID
-    com.vdhlite.ytdlp.json      Native host manifest
-  install.bat                   One-click native host setup
-  uninstall.bat                 Removes the native host registry entry
+  extension/                    Chrome extension package root
+    manifest.json               MV3 manifest
+    src/                        service worker, popup, content scripts
+    icons/                      extension icons
+  native/                       Windows native messaging host
+    yt_dlp_host.py              Native host JSON message handler
+    yt_dlp_runner.py            Background yt-dlp runner
+    install-native-host.ps1     Runtime native host installer
+    uninstall-native-host.ps1   Runtime native host uninstaller
+  scripts/
+    package-extension.ps1       Build extension zip
+    check-release-readiness.ps1 Public-release sanity checks
+  packaging/chrome-store/       Store review notes and permission justifications
+  docs/                         Install, support, privacy, roadmap, know-how
+  install.bat                   One-click native host setup for Windows
+  uninstall.bat                 Removes native host registration/runtime files
 ```
 
 ## Features
 
-- Detects browser-visible media candidates from `webRequest`, DOM scans, performance entries, and fetch/XHR probes.
+- Detects media candidates from network responses, DOM scans, performance entries, and page-context fetch/XHR probes.
+- Uses optional host permissions so users can grant site access intentionally.
 - Filters preview media so the real stream is easier to find.
 - Parses HLS master playlists when possible and shows quality labels like `1080P` and `720P`.
-- Lets the selected quality constrain yt-dlp downloads.
 - Starts local `yt-dlp` through Chrome Native Messaging.
-- Supports a custom download directory from the popup settings panel.
-- Shows recent yt-dlp jobs with overall progress, speed, ETA, and quality.
+- Checks local `yt-dlp`, `ffmpeg`, and native host health from the popup.
+- Stores recent local download jobs with progress, speed, ETA, quality, and failure state.
 
 ## Development Setup
 
@@ -43,42 +42,57 @@ VDH-Lite/
 2. Open `chrome://extensions/`.
 3. Enable Developer mode.
 4. Click `Load unpacked`.
-5. Select this folder: `C:\Users\LeeWei\Documents\VDH-Lite`.
-6. Reload the extension after changing `manifest.json`, `src/service_worker.js`, or native host files.
+5. Select:
 
-The manifest key pins the development extension ID. The expected ID is:
+```text
+C:\Users\LeeWei\Documents\VDH-Lite\extension
+```
+
+6. Open the extension popup and click `Test yt-dlp`.
+
+The development manifest key pins the extension ID:
 
 ```text
 biohojdpjgpahmcahblcdiafgckglinn
 ```
 
-`install.bat` rewrites `native/com.vdhlite.ytdlp.json` so Chrome can find the native host in the current repo path.
+## Community Distribution Model
 
-## Native Dependencies
+Chrome extensions cannot directly run Python scripts or local tools. Public releases should therefore ship two parts:
 
-The extension uses the native host to call:
+1. A Chrome Web Store extension package from `extension/`.
+2. A native host installer from `native/` and the root install scripts.
 
-- `yt-dlp`
-- `ffmpeg`
+See:
 
-The popup checks dependency status automatically. If something is missing, the settings panel can install it, or you can run:
+- [Architecture](docs/ARCHITECTURE.md)
+- [Installation Guide](docs/INSTALL.md)
+- [Privacy Policy Draft](docs/PRIVACY.md)
+- [Support Guide](docs/SUPPORT.md)
+- [Chrome Store Permission Justifications](packaging/chrome-store/PERMISSION_JUSTIFICATIONS.md)
+
+## Packaging
+
+Run:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\native\bootstrap.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\check-release-readiness.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\package-extension.ps1 -Store
 ```
 
-## Usage
+The extension zip is written to `dist/`.
 
-1. Open a video page and play the video for a few seconds.
-2. Open the extension popup.
-3. Pick a quality such as `1080P` or `720P`.
-4. Click `Download`.
-5. Watch progress in the `Downloads` panel.
+## Reference Know-How
+
+This repo tracks implementation lessons from mature downloader projects:
+
+- [Parabolic Know-How](docs/PARABOLIC_KNOWHOW.md)
+- [Video DownloadHelper Know-How](docs/VIDEO_DOWNLOADHELPER_KNOWHOW.md)
+
+Parabolic informs the `yt-dlp` integration model: discovery, structured download options, progress parsing, queues, and recovery.
+
+Video DownloadHelper informs the public product model: companion/native app installation, support docs, DRM messaging, troubleshooting, and community distribution.
 
 ## Roadmap
 
-See [docs/ROADMAP.md](docs/ROADMAP.md) for the VDH-inspired feature backlog and maturity plan.
-
-## Limits
-
-This is not a full Video DownloadHelper or yt-dlp replacement. It detects media URLs visible to the browser and passes them to local yt-dlp. It does not implement site extractors, DRM bypass, cookie decryption, or in-extension FFmpeg muxing.
+See [docs/ROADMAP.md](docs/ROADMAP.md).

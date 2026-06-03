@@ -13,7 +13,7 @@ from pathlib import Path
 
 HOST_VERSION = "1.0.0"
 DEFAULT_DOWNLOAD_DIR = Path.home() / "Downloads" / "VDH Lite"
-LOG_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "VDH Lite Custom"
+LOG_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "VDH Lite"
 LOG_FILE = LOG_DIR / "yt-dlp-host.log"
 JOBS_FILE = LOG_DIR / "jobs.json"
 
@@ -108,6 +108,9 @@ def get_deps():
     return {
         "ok": True,
         "hostVersion": HOST_VERSION,
+        "hostPath": str(Path(__file__).resolve()),
+        "logDir": str(LOG_DIR),
+        "defaultDownloadDir": str(DEFAULT_DOWNLOAD_DIR),
         "ytDlp": command_version("yt-dlp"),
         "ffmpeg": command_version("ffmpeg"),
         "winget": command_version("winget"),
@@ -401,6 +404,8 @@ def main():
             send_message({
                 "ok": True,
                 "version": HOST_VERSION,
+                "hostPath": str(Path(__file__).resolve()),
+                "logDir": str(LOG_DIR),
                 "defaultDownloadDir": str(DEFAULT_DOWNLOAD_DIR),
             })
         elif kind == "deps":
