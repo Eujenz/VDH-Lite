@@ -29,7 +29,7 @@ VDH-Lite/
 ## Features
 
 - Detects media candidates from network responses, DOM scans, performance entries, and page-context fetch/XHR probes.
-- Uses optional host permissions so users can grant site access intentionally.
+- Declares HTTP/HTTPS host permissions so the `webRequest` detector can observe media requests.
 - Filters preview media so the real stream is easier to find.
 - Parses HLS master playlists when possible and shows quality labels like `1080P` and `720P`.
 - Starts local `yt-dlp` through Chrome Native Messaging.

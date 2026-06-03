@@ -8,44 +8,73 @@
   </head>
   <body>
     <header>
-      <strong>VDH Lite</strong>
+      <div class="brand">
+        <img src="../icons/icon32.png" alt="" width="24" height="24">
+        <div>
+          <strong>VDH Lite</strong>
+          <span id="page-host">Current tab</span>
+        </div>
+      </div>
       <div class="header-actions">
-        <button id="grant" type="button">Grant site</button>
+        <button id="grant" class="secondary" type="button">Grant site</button>
         <button id="settings-toggle" class="icon-button" type="button" title="Settings" aria-label="Settings">&#9881;</button>
       </div>
     </header>
     <main>
-      <div id="status">Loading...</div>
-      <section id="settings-panel" class="settings" hidden>
-        <label for="download-dir">Save videos to</label>
-        <input id="download-dir" type="text" placeholder="%USERPROFILE%\\Downloads\\VDH Lite">
-        <button id="reset-dir" type="button">Reset</button>
-        <button id="test-native" type="button">Test yt-dlp</button>
-        <div id="deps-status" class="deps-status">Checking dependencies...</div>
-        <button id="install-deps" type="button">Install missing</button>
+      <section id="status-card" class="status-card">
+        <div>
+          <div id="status" class="status-title">Loading...</div>
+          <div id="status-detail" class="status-detail">Checking native host and scanning the active tab.</div>
+        </div>
       </section>
-      <section class="quality-bar">
-        <label for="quality-select">Quality</label>
-        <select id="quality-select"></select>
-        <button id="run-selected" type="button">Download</button>
+      <section id="settings-panel" class="settings" hidden>
+        <div class="section-heading">Settings</div>
+        <label for="download-dir">Save folder</label>
+        <div class="input-row">
+          <input id="download-dir" type="text" placeholder="%USERPROFILE%\\Downloads\\VDH Lite">
+          <button id="browse-dir" class="secondary" type="button">Browse</button>
+          <button id="reset-dir" class="secondary" type="button">Reset</button>
+        </div>
+        <div class="settings-actions">
+          <button id="test-native" type="button">Test native host</button>
+          <button id="install-deps" class="secondary" type="button">Install missing</button>
+        </div>
+        <div id="deps-status" class="deps-status">Checking dependencies...</div>
       </section>
       <section id="jobs-panel" class="jobs-panel">
         <div class="panel-header">
-          <div class="panel-title">Downloads</div>
-          <button id="clear-jobs" type="button">Clear history</button>
+          <div>
+            <div class="section-heading">Downloads</div>
+            <div class="section-subtitle">Recent native host jobs</div>
+          </div>
+          <button id="clear-jobs" class="secondary" type="button">Clear finished</button>
         </div>
         <div id="jobs"></div>
       </section>
+      <section class="quality-bar">
+        <div>
+          <label for="quality-select">Quick download</label>
+          <div class="section-subtitle">Best detected quality is selected first</div>
+        </div>
+        <select id="quality-select"></select>
+        <button id="run-selected" type="button">Download</button>
+      </section>
+      <div class="panel-header media-header">
+        <div>
+          <div class="section-heading">Detected media</div>
+          <div id="media-summary" class="section-subtitle">Scanning current tab...</div>
+        </div>
+        <div class="media-actions">
+          <button id="refresh" class="secondary" type="button">Refresh</button>
+          <button id="clear" class="secondary" type="button">Clear</button>
+        </div>
+      </div>
       <ul id="items"></ul>
       <section id="command-panel" hidden>
         <label for="command-output">Download details</label>
         <textarea id="command-output" readonly rows="4"></textarea>
       </section>
     </main>
-    <footer>
-      <button id="refresh" type="button">Refresh</button>
-      <button id="clear" type="button">Clear</button>
-    </footer>
     <script src="popup.js"></script>
   </body>
 </html>

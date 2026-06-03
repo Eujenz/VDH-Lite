@@ -7,7 +7,9 @@ const PLAYLIST_FETCH_LIMIT = 1024 * 1024;
 const tabMedia = new Map();
 const qualityCache = new Map();
 const pendingQualityFetches = new Set();
+const requestHeaderCache = new Map();
 const nativeHostName = "com.vdhlite.ytdlp";
+const FORWARDED_HEADER_NAMES = new Set(["referer", "origin", "user-agent", "accept", "accept-language", "cookie"]);
 
 function normalizeUrl(url) {
   try {
@@ -38,7 +40,42 @@ function detectQualityFromUrl(url) {
   if (pResolution) return `${pResolution[1]}P`;
   if (lowered.includes(".m3u8")) return "HLS";
   if (lowered.includes(".mpd")) return "DASH";
-  return "Media";
+  if (lowered.includes(".mp4")) return "MP4";
+  if (lowered.includes(".webm")) return "WEBM";
+  return "Quality unknown";
+}
+
+function contentTypeFromHeaders(responseHeaders = []) {
+  const header = responseHeaders.find((entry) => entry.name?.toLowerCase() === "content-type");
+  return String(header?.value || "").toLowerCase();
+}
+
+function headersForDownload(requestHeaders = []) {
+  const headers = {};
+  for (const header of requestHeaders) {
+    const name = String(header.name || "").toLowerCase();
+    const value = String(header.value || "");
+    if (FORWARDED_HEADER_NAMES.has(name) && value) headers[name] = value;
+  }
+  return headers;
+}
+
+function rememberRequestHeaders(url, headers) {
+  requestHeaderCache.set(url, headers);
+  if (requestHeaderCache.size > 200) {
+    const oldestKey = requestHeaderCache.keys().next().value;
+    requestHeaderCache.delete(oldestKey);
+  }
+}
+
+function detectQualityFromContentType(contentType) {
+  if (contentType.includes("application/vnd.apple.mpegurl")) return "HLS";
+  if (contentType.includes("application/x-mpegurl")) return "HLS";
+  if (contentType.includes("application/dash+xml")) return "DASH";
+  if (contentType.includes("video/mp4")) return "MP4";
+  if (contentType.includes("video/webm")) return "WEBM";
+  if (contentType.includes("audio/")) return "Audio";
+  return null;
 }
 
 function m3u8QualityInfo(text) {
@@ -57,13 +94,13 @@ function m3u8QualityInfo(text) {
 
 function applyCachedQuality(item) {
   const cached = qualityCache.get(item.url);
-  item.quality = cached?.quality || detectQualityFromUrl(item.url);
+  item.quality = cached?.quality || detectQualityFromContentType(item.contentType || "") || detectQualityFromUrl(item.url);
   if (cached?.qualities?.length) item.qualities = cached.qualities;
 }
 
-async function hydrateM3u8Quality(tabId, url) {
+async function hydrateM3u8Quality(tabId, url, force = false) {
   if (qualityCache.has(url) || pendingQualityFetches.has(url)) return;
-  if (!url.toLowerCase().includes(".m3u8")) return;
+  if (!force && !url.toLowerCase().includes(".m3u8")) return;
   pendingQualityFetches.add(url);
 
   try {
@@ -101,17 +138,14 @@ function looksLikeMedia(details) {
   if (!MEDIA_TYPES.has(details.type)) return false;
   if (EXTENSIONS.test(details.url)) return true;
 
-  const responseHeaders = details.responseHeaders || [];
-  return responseHeaders.some((header) => {
-    const name = header.name.toLowerCase();
-    const value = String(header.value || "").toLowerCase();
-    return name === "content-type" && (
-      value.includes("video/") ||
-      value.includes("audio/") ||
-      value.includes("application/vnd.apple.mpegurl") ||
-      value.includes("application/dash+xml")
-    );
-  });
+  const contentType = contentTypeFromHeaders(details.responseHeaders || []);
+  return (
+    contentType.includes("video/") ||
+    contentType.includes("audio/") ||
+    contentType.includes("application/vnd.apple.mpegurl") ||
+    contentType.includes("application/x-mpegurl") ||
+    contentType.includes("application/dash+xml")
+  );
 }
 
 function pushMedia(tabId, item) {
@@ -122,7 +156,7 @@ function pushMedia(tabId, item) {
   if (current.some((existing) => existing.url === item.url)) return;
   current.unshift(item);
   tabMedia.set(tabId, current.slice(0, MAX_ITEMS_PER_TAB));
-  hydrateM3u8Quality(tabId, item.url);
+  hydrateM3u8Quality(tabId, item.url, item.quality === "HLS");
 }
 
 chrome.webRequest.onResponseStarted.addListener(
@@ -133,6 +167,8 @@ chrome.webRequest.onResponseStarted.addListener(
     pushMedia(details.tabId, {
       url,
       type: details.type,
+      contentType: contentTypeFromHeaders(details.responseHeaders || []),
+      requestHeaders: requestHeaderCache.get(url) || {},
       method: details.method,
       timeStamp: details.timeStamp,
       originUrl: details.initiator || null
@@ -140,6 +176,16 @@ chrome.webRequest.onResponseStarted.addListener(
   },
   { urls: ["http://*/*", "https://*/*"], types: [...MEDIA_TYPES] },
   ["responseHeaders"]
+);
+
+chrome.webRequest.onBeforeSendHeaders.addListener(
+  (details) => {
+    const url = normalizeUrl(details.url);
+    if (!url) return;
+    rememberRequestHeaders(url, headersForDownload(details.requestHeaders || []));
+  },
+  { urls: ["http://*/*", "https://*/*"], types: [...MEDIA_TYPES] },
+  ["requestHeaders", "extraHeaders"]
 );
 
 chrome.tabs.onRemoved.addListener((tabId) => {
@@ -217,6 +263,21 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       sendResponse(response || { ok: false, error: "Native host returned no response" });
     });
+    return true;
+  }
+
+  if (message?.type === "native-pick-folder") {
+    chrome.runtime.sendNativeMessage(
+      nativeHostName,
+      { type: "pick-folder", currentPath: message.currentPath || "" },
+      (response) => {
+        if (chrome.runtime.lastError) {
+          sendResponse({ ok: false, error: chrome.runtime.lastError.message });
+          return;
+        }
+        sendResponse(response || { ok: false, error: "Native host returned no response" });
+      }
+    );
     return true;
   }
 

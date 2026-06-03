@@ -6,13 +6,13 @@ Use this as the working draft for Chrome Web Store review answers.
 
 VDH Lite uses `activeTab` so a user action in the popup can scan the current tab for visible media elements and performance entries.
 
-## optional_host_permissions
+## host_permissions
 
-VDH Lite asks for per-site access only when the user grants it from the popup. This lets the extension observe media-like network requests on the current site without requesting install-time access to every website.
+VDH Lite declares HTTP/HTTPS host permissions because its `webRequest` detector registers listeners for media-like requests across browser pages. Chrome requires these request URL patterns to be declared in the manifest host permissions for the listener to run.
 
 ## webRequest
 
-VDH Lite uses `webRequest` to detect browser-visible media candidates such as HLS, DASH, MP4, WebM, audio files, and media content types on granted sites.
+VDH Lite uses `webRequest` to detect browser-visible media candidates such as HLS, DASH, MP4, WebM, audio files, and media content types.
 
 ## scripting
 

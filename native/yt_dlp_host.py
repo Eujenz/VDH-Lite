@@ -10,6 +10,7 @@ import shutil
 import winreg
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 HOST_VERSION = "1.0.0"
 DEFAULT_DOWNLOAD_DIR = Path.home() / "Downloads" / "VDH Lite"
@@ -73,6 +74,51 @@ def resolve_download_dir(value):
     path = Path(os.path.expandvars(os.path.expanduser(str(value)))) if value else DEFAULT_DOWNLOAD_DIR
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def expand_download_path(value):
+    if not value:
+        return DEFAULT_DOWNLOAD_DIR
+    return Path(os.path.expandvars(os.path.expanduser(str(value))))
+
+
+def initial_folder(value):
+    path = expand_download_path(value)
+    if path.is_file():
+        return path.parent
+    if path.exists():
+        return path
+    if path.parent.exists():
+        return path.parent
+    if DEFAULT_DOWNLOAD_DIR.parent.exists():
+        return DEFAULT_DOWNLOAD_DIR.parent
+    return Path.home()
+
+
+def pick_folder(message):
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        selected = filedialog.askdirectory(
+            title="Choose VDH Lite download folder",
+            initialdir=str(initial_folder(message.get("currentPath"))),
+            mustexist=False,
+        )
+        root.destroy()
+
+        if not selected:
+            return {"ok": True, "cancelled": True}
+
+        path = Path(selected)
+        path.mkdir(parents=True, exist_ok=True)
+        return {"ok": True, "path": str(path)}
+    except Exception as error:
+        log(f"Folder picker error: {error}")
+        return {"ok": False, "error": str(error)}
 
 
 def ytdlp_format_for_quality(quality):
@@ -196,6 +242,20 @@ def is_process_running(pid):
     return str(pid) in result.stdout
 
 
+def elapsed_text(started_at, finished_at=None):
+    try:
+        start = datetime.fromisoformat(started_at)
+        end = datetime.fromisoformat(finished_at) if finished_at else datetime.now()
+        seconds = max(0, int((end - start).total_seconds()))
+    except Exception:
+        return None
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes}:{seconds:02d}"
+
+
 def parse_progress(job):
     current = None
     total = None
@@ -240,12 +300,15 @@ def parse_progress(job):
                     speedText = f"{speedBytes / (1024 ** 2):.2f} MB/s"
                 if "ERROR:" in line:
                     job["lastError"] = line.strip()
+                eta_match = re.search(r"\bETA\s+([0-9:]+|Unknown)", line)
+                if eta_match:
+                    etaText = eta_match.group(1)
                 match = re.search(r"\[download\]\s+([0-9.]+)%.*?at\s+([0-9.]+)([KMG]i?B)/s(?:\s+ETA\s+([0-9:]+|Unknown))?", line)
                 if match:
                     overallPercent = float(match.group(1))
                     value = float(match.group(2))
                     unit = match.group(3)
-                    etaText = match.group(4)
+                    etaText = match.group(4) or etaText
                     multiplier = {
                         "KiB": 1024,
                         "MiB": 1024 ** 2,
@@ -290,7 +353,8 @@ def get_status():
         job["percent"] = percent
         job["speedText"] = speedText
         job["speedBytes"] = speedBytes
-        job["etaText"] = etaText
+        job["etaText"] = etaText if running else None
+        job["elapsedText"] = elapsed_text(job.get("startedAt"), job.get("finishedAt"))
         if not running and job.get("status") == "running":
             exit_code = job.get("exitCode")
             if exit_code is None:
@@ -300,6 +364,8 @@ def get_status():
                 job["percent"] = job["percent"] if job["percent"] is not None else 100
             else:
                 job["status"] = "failed"
+            job["finishedAt"] = datetime.now().isoformat(timespec="seconds")
+            job["elapsedText"] = elapsed_text(job.get("startedAt"), job.get("finishedAt"))
             changed = True
     if changed:
         write_jobs(jobs)
@@ -316,6 +382,42 @@ def clear_jobs():
     return {"ok": True}
 
 
+def forwarded_headers(message):
+    headers = message.get("requestHeaders")
+    if not isinstance(headers, dict):
+        return {}
+
+    allowed = {
+        "referer": "Referer",
+        "origin": "Origin",
+        "accept": "Accept",
+        "accept-language": "Accept-Language",
+        "cookie": "Cookie",
+    }
+    forwarded = {}
+    for raw_name, raw_value in headers.items():
+        name = str(raw_name or "").lower()
+        value = str(raw_value or "").strip()
+        if name in allowed and value:
+            forwarded[allowed[name]] = value
+    return forwarded
+
+
+def loggable_command(command):
+    redacted = []
+    redact_next = False
+    for part in command:
+        if redact_next:
+            name = str(part).split(":", 1)[0]
+            redacted.append(f"{name}: <redacted>")
+            redact_next = False
+            continue
+        redacted.append(part)
+        if part == "--add-header":
+            redact_next = True
+    return " ".join(redacted)
+
+
 def start_download(message):
     url = message.get("url")
     if not isinstance(url, str) or not url.startswith(("http://", "https://")):
@@ -324,6 +426,8 @@ def start_download(message):
     download_dir = resolve_download_dir(message.get("downloadDir"))
     title = sanitize_component(message.get("title"), "video")
     referer = message.get("referer") or message.get("originUrl")
+    user_agent = message.get("userAgent")
+    headers = forwarded_headers(message)
     output_template = f"{title} - %(id)s.%(ext)s"
 
     command = [
@@ -338,10 +442,17 @@ def start_download(message):
     if format_selector:
         command.extend(["-f", format_selector])
     if isinstance(referer, str) and referer.startswith(("http://", "https://")):
-        command.extend(["--referer", referer])
+        headers.setdefault("Referer", referer)
+        parsed_referer = urlparse(referer)
+        origin = f"{parsed_referer.scheme}://{parsed_referer.netloc}"
+        headers.setdefault("Origin", origin)
+    if isinstance(user_agent, str) and user_agent.strip():
+        command.extend(["--user-agent", user_agent.strip()])
+    for name, value in headers.items():
+        command.extend(["--add-header", f"{name}: {value}"])
     command.append(url)
 
-    log(f"Starting: {' '.join(command)}")
+    log(f"Starting: {loggable_command(command)}")
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     progress_path = LOG_DIR / f"progress-{stamp}-{os.getpid()}.txt"
@@ -416,6 +527,8 @@ def main():
             send_message(start_download(message))
         elif kind == "status":
             send_message(get_status())
+        elif kind == "pick-folder":
+            send_message(pick_folder(message))
         elif kind == "clear-jobs":
             send_message(clear_jobs())
         else:

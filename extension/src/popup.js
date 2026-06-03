@@ -1,4 +1,8 @@
 const statusEl = document.querySelector("#status");
+const statusCard = document.querySelector("#status-card");
+const statusDetailEl = document.querySelector("#status-detail");
+const pageHostEl = document.querySelector("#page-host");
+const mediaSummaryEl = document.querySelector("#media-summary");
 const itemsEl = document.querySelector("#items");
 const refreshButton = document.querySelector("#refresh");
 const clearButton = document.querySelector("#clear");
@@ -6,6 +10,7 @@ const grantButton = document.querySelector("#grant");
 const commandPanel = document.querySelector("#command-panel");
 const commandOutput = document.querySelector("#command-output");
 const downloadDirInput = document.querySelector("#download-dir");
+const browseDirButton = document.querySelector("#browse-dir");
 const resetDirButton = document.querySelector("#reset-dir");
 const testNativeButton = document.querySelector("#test-native");
 const qualitySelect = document.querySelector("#quality-select");
@@ -23,6 +28,13 @@ let currentQualityOptions = [];
 let activeTabInfo = {};
 let pendingMediaRefresh = null;
 
+function setStatus(title, detail = "", tone = "") {
+  statusEl.textContent = title;
+  statusDetailEl.textContent = detail;
+  statusCard.classList.remove("ready", "warning", "error");
+  if (tone) statusCard.classList.add(tone);
+}
+
 function describeUrl(url) {
   try {
     const parsed = new URL(url);
@@ -38,13 +50,28 @@ function describeUrl(url) {
 
 function defaultTitleForItem(item) {
   const tabTitle = activeTabInfo.title?.trim();
-  if (tabTitle) return tabTitle.slice(0, 140);
+  if (tabTitle) return tabTitle.replace(/\s+[-|]\s+.*$/, "").slice(0, 140);
   return describeUrl(item.url).name;
+}
+
+function labelForMediaType(type) {
+  const normalized = String(type || "").toLowerCase();
+  if (normalized === "media") return "Media";
+  if (normalized === "xmlhttprequest") return "XHR";
+  if (normalized === "dom") return "Page";
+  if (normalized === "other") return "Other";
+  return type || "Media";
 }
 
 function detectQuality(itemOrUrl) {
   if (typeof itemOrUrl === "object" && itemOrUrl?.quality) return itemOrUrl.quality;
   const url = typeof itemOrUrl === "string" ? itemOrUrl : itemOrUrl?.url || "";
+  const contentType = typeof itemOrUrl === "object" ? String(itemOrUrl?.contentType || "").toLowerCase() : "";
+  if (contentType.includes("application/vnd.apple.mpegurl") || contentType.includes("application/x-mpegurl")) return "HLS";
+  if (contentType.includes("application/dash+xml")) return "DASH";
+  if (contentType.includes("video/mp4")) return "MP4";
+  if (contentType.includes("video/webm")) return "WEBM";
+  if (contentType.includes("audio/")) return "Audio";
   const lowered = url.toLowerCase();
   const resolution = lowered.match(/(?:^|\/)(\d{3,4})x(\d{3,4})(?:\/|$)/);
   if (resolution) return `${resolution[2]}P`;
@@ -52,7 +79,9 @@ function detectQuality(itemOrUrl) {
   if (pResolution) return `${pResolution[1]}P`;
   if (lowered.includes(".m3u8")) return "HLS";
   if (lowered.includes(".mpd")) return "DASH";
-  return "Media";
+  if (lowered.includes(".mp4")) return "MP4";
+  if (lowered.includes(".webm")) return "WEBM";
+  return "Quality unknown";
 }
 
 function qualityRank(item) {
@@ -70,6 +99,34 @@ async function saveSettings() {
   });
 }
 
+async function browseDownloadDir() {
+  browseDirButton.disabled = true;
+  setStatus("Choosing folder", "Use the Windows folder picker opened by the native host.", "warning");
+
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: "native-pick-folder",
+      currentPath: downloadDirInput.value.trim() || DEFAULT_DOWNLOAD_DIR
+    });
+
+    if (response?.ok && response.path) {
+      downloadDirInput.value = response.path;
+      await saveSettings();
+      setStatus("Save folder updated", response.path, "ready");
+      return;
+    }
+
+    if (response?.cancelled) {
+      setStatus("Folder selection cancelled", "The previous save folder is unchanged.", "warning");
+      return;
+    }
+
+    setStatus("Folder picker failed", response?.error || "Native host could not open the folder picker.", "error");
+  } finally {
+    browseDirButton.disabled = false;
+  }
+}
+
 async function loadSettings() {
   const settings = await chrome.storage.local.get({
     downloadDir: DEFAULT_DOWNLOAD_DIR
@@ -80,6 +137,14 @@ async function loadSettings() {
 async function getActiveTabInfo() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   return tab || {};
+}
+
+function updatePageHost(tab) {
+  try {
+    pageHostEl.textContent = tab?.url ? new URL(tab.url).hostname : "Current tab";
+  } catch {
+    pageHostEl.textContent = "Current tab";
+  }
 }
 
 async function runNativeDownload(item, qualityOverride) {
@@ -94,6 +159,8 @@ async function runNativeDownload(item, qualityOverride) {
     url: item.url,
     referer: item.originUrl || tab.url || "",
     originUrl: item.originUrl || tab.url || "",
+    userAgent: navigator.userAgent || "",
+    requestHeaders: item.requestHeaders || {},
     title: tab.title || info.name,
     host: info.host,
     quality,
@@ -101,10 +168,10 @@ async function runNativeDownload(item, qualityOverride) {
   });
 
   if (response?.ok) {
-    statusEl.textContent = `Started yt-dlp pid ${response.pid}`;
+    setStatus("Download started", `Native job ${response.jobId || response.pid} is running.`, "ready");
     await refreshJobs();
   } else {
-    statusEl.textContent = `yt-dlp failed: ${response?.error || "unknown error"}`;
+    setStatus("Download failed to start", response?.error || "Unknown native host error.", "error");
   }
 }
 
@@ -130,7 +197,10 @@ function renderQualitySelect(items) {
 function renderJobs(jobs) {
   jobsEl.innerHTML = "";
   if (!jobs.length) {
-    jobsEl.textContent = "No active downloads";
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "No downloads yet";
+    jobsEl.append(empty);
     return;
   }
 
@@ -164,7 +234,7 @@ function renderJobs(jobs) {
     progress.append(bar);
 
     const meta = document.createElement("div");
-    meta.className = "meta";
+    meta.className = "meta job-tags";
     const label = job.running
       ? "Running"
       : job.status === "failed"
@@ -172,7 +242,40 @@ function renderJobs(jobs) {
       : job.status === "finished"
           ? "Finished"
           : "Unknown";
-    meta.textContent = `${label}${job.speedText ? ` | ${job.speedText}` : ""}${job.etaText ? ` | ETA ${job.etaText}` : ""}${job.quality ? ` | ${job.quality}` : ""}${job.lastError ? ` | ${job.lastError}` : ""}`;
+    const statusBadge = document.createElement("span");
+    statusBadge.className = `badge ${job.status === "failed" ? "danger" : job.status === "finished" ? "success" : "neutral"}`;
+    statusBadge.textContent = label;
+    meta.append(statusBadge);
+    if (job.quality) {
+      const qualityBadge = document.createElement("span");
+      qualityBadge.className = "badge quality-badge";
+      qualityBadge.textContent = job.quality;
+      meta.append(qualityBadge);
+    }
+    if (job.speedText) {
+      const speedBadge = document.createElement("span");
+      speedBadge.className = "badge neutral";
+      speedBadge.textContent = job.speedText;
+      meta.append(speedBadge);
+    }
+    if (job.etaText) {
+      const etaBadge = document.createElement("span");
+      etaBadge.className = "badge neutral";
+      etaBadge.textContent = `ETA ${job.etaText}`;
+      meta.append(etaBadge);
+    }
+    if (!job.running && job.elapsedText) {
+      const elapsedBadge = document.createElement("span");
+      elapsedBadge.className = "badge neutral";
+      elapsedBadge.textContent = `Done in ${job.elapsedText}`;
+      meta.append(elapsedBadge);
+    }
+    if (job.lastError) {
+      const errorText = document.createElement("span");
+      errorText.className = "job-error";
+      errorText.textContent = job.lastError;
+      meta.append(errorText);
+    }
 
     row.append(head, progress, meta);
     jobsEl.append(row);
@@ -188,6 +291,7 @@ function renderDeps(response) {
   if (!response?.ok) {
     depsStatus.textContent = `Native host missing: ${response?.error || "unknown error"}`;
     installDepsButton.disabled = true;
+    setStatus("Native host is not connected", "Install the VDH Lite native host, then test again.", "error");
     return;
   }
   const yt = response.ytDlp?.installed ? "yt-dlp OK" : "yt-dlp missing";
@@ -196,6 +300,11 @@ function renderDeps(response) {
   const ready = response.ytDlp?.installed && response.ffmpeg?.installed;
   installDepsButton.hidden = ready;
   installDepsButton.disabled = ready;
+  if (ready) {
+    setStatus("Ready to detect media", "Grant this site if no media appears automatically.", "ready");
+  } else {
+    setStatus("Native host needs dependencies", depsStatus.textContent, "warning");
+  }
 }
 
 async function checkDependencies() {
@@ -206,14 +315,18 @@ async function checkDependencies() {
 
 async function listMedia() {
   activeTabInfo = await getActiveTabInfo();
+  updatePageHost(activeTabInfo);
   const response = await chrome.runtime.sendMessage({ type: "list-media" });
   const items = response.items || [];
   currentItems = items;
   itemsEl.innerHTML = "";
   renderQualitySelect(items);
-  statusEl.textContent = items.length
-    ? `Detected ${items.length} media candidates`
-    : "No media candidates yet";
+  mediaSummaryEl.textContent = items.length
+    ? `${items.length} candidate${items.length === 1 ? "" : "s"} found`
+    : "No candidates found";
+  if (items.length) {
+    setStatus("Media detected", "Choose a candidate or use quick download.", "ready");
+  }
 
   for (const item of items) {
     const li = document.createElement("li");
@@ -228,11 +341,17 @@ async function listMedia() {
     url.title = item.url;
 
     const meta = document.createElement("div");
-    meta.className = "meta";
+    meta.className = "meta media-tags";
     const badge = document.createElement("span");
-    badge.className = "badge";
+    badge.className = "badge quality-badge";
     badge.textContent = detectQuality(item);
-    meta.append(badge, document.createTextNode(`${item.type} | ${info.host}`));
+    const typeBadge = document.createElement("span");
+    typeBadge.className = "badge neutral";
+    typeBadge.textContent = labelForMediaType(item.type);
+    const source = document.createElement("span");
+    source.className = "badge source";
+    source.textContent = info.host;
+    meta.append(badge, typeBadge, source);
 
     details.append(url, meta);
 
@@ -249,6 +368,13 @@ async function listMedia() {
     actions.append(runYtDlp);
     li.append(details, actions);
     itemsEl.append(li);
+  }
+
+  if (!items.length) {
+    const empty = document.createElement("li");
+    empty.className = "empty-state";
+    empty.textContent = "Play the video for a few seconds, then refresh. Grant site access if detection is blocked.";
+    itemsEl.append(empty);
   }
 
   const unresolvedPlaylists = items.some((item) => detectQuality(item) === "HLS");
@@ -281,7 +407,11 @@ async function grantCurrentSite() {
   if (!tab?.url || !/^https?:\/\//.test(tab.url)) return;
   const origin = new URL(tab.url).origin + "/*";
   const granted = await chrome.permissions.request({ origins: [origin] });
-  statusEl.textContent = granted ? `Granted ${origin}` : "Site permission was not granted";
+  setStatus(
+    granted ? "Site access granted" : "Site access was not granted",
+    granted ? origin : "VDH Lite can still use active-tab scanning after a user action.",
+    granted ? "ready" : "warning"
+  );
   if (granted) await scanCurrentTab();
 }
 
@@ -306,6 +436,7 @@ grantButton.addEventListener("click", async () => {
 });
 
 downloadDirInput.addEventListener("change", saveSettings);
+browseDirButton.addEventListener("click", browseDownloadDir);
 
 resetDirButton.addEventListener("click", async () => {
   downloadDirInput.value = DEFAULT_DOWNLOAD_DIR;
@@ -319,9 +450,11 @@ testNativeButton.addEventListener("click", async () => {
 
 async function testNativeHost() {
   const response = await chrome.runtime.sendMessage({ type: "native-ping" });
-  statusEl.textContent = response?.ok
-    ? `yt-dlp host ready (${response.version})`
-    : `Native host error: ${response?.error || "unknown error"}`;
+  setStatus(
+    response?.ok ? `Native host ready (${response.version})` : "Native host error",
+    response?.ok ? response.defaultDownloadDir || "Ready for local downloads." : response?.error || "Unknown error.",
+    response?.ok ? "ready" : "error"
+  );
 }
 
 runSelectedButton.addEventListener("click", () => {
@@ -336,10 +469,12 @@ settingsToggle.addEventListener("click", () => {
 installDepsButton.addEventListener("click", async () => {
   installDepsButton.disabled = true;
   depsStatus.textContent = "Installing missing dependencies...";
+  setStatus("Installing dependencies", "This can take several minutes on a fresh machine.", "warning");
   const response = await chrome.runtime.sendMessage({ type: "native-install-deps" });
   if (!response?.ok) {
     depsStatus.textContent = `Install failed: ${response?.error || "unknown error"}`;
     installDepsButton.disabled = false;
+    setStatus("Dependency install failed", response?.error || "Unknown error.", "error");
     return;
   }
   renderDeps(response.deps);

@@ -14,7 +14,7 @@ Native host
   native/install-native-host.ps1
 ```
 
-The extension runs in Chrome's Manifest V3 environment. It can inspect the active tab, run content scripts, observe granted-site media requests, and display the popup UI. It cannot execute Python, `yt-dlp`, or `ffmpeg` directly.
+The extension runs in Chrome's Manifest V3 environment. It can inspect the active tab, run content scripts, observe media-like requests, and display the popup UI. It cannot execute Python, `yt-dlp`, or `ffmpeg` directly.
 
 The native host is a local Windows program registered through Chrome Native Messaging. It receives JSON messages from the extension, validates them, starts `yt-dlp`, stores job state, and returns dependency/download status.
 
@@ -23,7 +23,7 @@ The native host is a local Windows program registered through Chrome Native Mess
 ```text
 User opens popup
   -> popup asks service worker for media candidates
-  -> service worker scans granted active tab and media requests
+  -> service worker scans active tab and media requests
   -> user chooses a candidate and quality
   -> service worker sends a native message
   -> native host starts yt-dlp runner
@@ -60,19 +60,21 @@ HKCU\Software\Google\Chrome\NativeMessagingHosts\com.vdhlite.ytdlp
 
 The source `native/com.vdhlite.ytdlp.json` is a reference manifest only. The actual native messaging manifest is generated during install.
 
-## Review-Friendly Permission Model
+## Permission Model
 
-VDH Lite uses optional host permissions. The extension can be installed without immediate access to every website. Users grant the current site from the popup before deeper media detection runs.
+VDH Lite's current `webRequest` detector registers listeners for HTTP and HTTPS media requests. Chrome requires those URL patterns to be declared in `host_permissions`; putting them only in `optional_host_permissions` causes service worker startup errors.
 
-This supports a safer public product posture:
+The public product posture should therefore be:
 
 - `activeTab` for user-initiated active-tab scanning
-- `optional_host_permissions` for site-scoped media detection
+- `host_permissions` for HTTP/HTTPS media request detection
 - `nativeMessaging` for local `yt-dlp` handoff
 - `storage` for local settings
 - `downloads` for direct browser download fallback
-- `webRequest` for media candidate detection on granted sites
+- `webRequest` for media candidate detection
 - `scripting` for DOM/performance/media probing
+
+Future work can revisit a lower-permission detector mode by registering webRequest listeners only after site-specific permission grants, but the current implementation needs install-time host permissions to run reliably.
 
 ## Reference Influences
 

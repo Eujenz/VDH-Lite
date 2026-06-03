@@ -36,7 +36,7 @@ if (Test-Path $manifestPath) {
     }
   }
   if ($manifest.host_permissions) {
-    $warnings.Add("Manifest uses install-time host_permissions. Prefer optional_host_permissions for review-friendly site grants.")
+    $warnings.Add("Manifest uses install-time host_permissions. Ensure Chrome Web Store host permission justification is current.")
   }
   foreach ($permission in @($manifest.permissions)) {
     if ($permission -in @("nativeMessaging", "webRequest", "scripting", "downloads")) {

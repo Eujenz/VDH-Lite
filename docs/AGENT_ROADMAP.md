@@ -11,7 +11,7 @@ VDH Lite already has:
 - Chrome MV3 extension under `extension/`
 - popup UI for media candidates, quality selection, dependency status, and recent jobs
 - background media detection through `webRequest`, content scripts, performance entries, and page probes
-- optional host permissions for review-friendly site access
+- HTTP/HTTPS host permissions for the current `webRequest` detector
 - Windows native host under `native/`
 - `yt-dlp` process runner and basic job persistence
 - native dependency checks and install attempts for `yt-dlp` / FFmpeg
@@ -618,31 +618,33 @@ Acceptance criteria:
 
 ## Recommended Agent Sequence
 
+User priority update: UI/UX should lead the next development passes. Keep native reliability in view, but make the popup easier to understand before expanding deeper `yt-dlp` behavior.
+
 Work in this order unless the user explicitly reprioritizes:
 
-1. Stage 1: Native progress and final path hardening.
-2. Stage 2: Native discovery preflight.
-3. Stage 3: Structured download options and format selection.
-4. Stage 4: Candidate grouping and per-item quality UX.
-5. Stage 5: Queue, cancel, retry, and recovery.
-6. Stage 6: Diagnostics and community support UX.
+1. Stage 4: Candidate grouping and per-item quality UX.
+2. Stage 6: Diagnostics and community support UX.
+3. Stage 1: Native progress and final path hardening.
+4. Stage 2: Native discovery preflight.
+5. Stage 3: Structured download options and format selection.
+6. Stage 5: Queue, cancel, retry, and recovery.
 7. Stage 9: Automated tests and release quality.
 8. Stage 8: Detection coverage and unsupported media.
 9. Stage 7: Advanced `yt-dlp` features.
 10. Stage 10: Public release readiness.
 
-Reasoning: first stabilize the native download contract, then make media choices accurate, then improve UX and support. Detection expansion and advanced options are valuable, but they should not precede the reliable native core.
+Reasoning: users should immediately understand whether VDH Lite is ready, what it detected, what will be downloaded, and what to do when nothing appears. Once the popup is clear, native progress and discovery can deepen the same UI instead of forcing another redesign.
 
 ## First Agent Task Template
 
 Use this prompt for the next implementation agent:
 
 ```text
-Read docs/AGENT_ROADMAP.md, docs/PARABOLIC_KNOWHOW.md, and docs/ARCHITECTURE.md.
-Implement Stage 1 only: native progress and final path hardening.
+Read docs/AGENT_ROADMAP.md, docs/VIDEO_DOWNLOADHELPER_KNOWHOW.md, and docs/ARCHITECTURE.md.
+Implement Stage 4 only: candidate grouping and per-item quality UX.
 Keep changes scoped to the listed target files.
-Preserve existing direct download behavior.
-Validate with python -m py_compile and scripts/check-release-readiness.ps1.
+Preserve existing native download behavior.
+Validate with scripts/package-extension.ps1 -Store and scripts/check-release-readiness.ps1.
 Report changed files, verification results, and any manual smoke-test gaps.
 ```
 

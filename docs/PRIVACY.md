@@ -9,7 +9,7 @@ VDH Lite is designed to process media detection and downloads locally.
 The extension may inspect:
 
 - the active tab URL and title
-- media-like network requests on sites the user grants
+- media-like network requests on HTTP/HTTPS pages
 - page media elements and performance entries
 - user settings such as download directory and quality choice
 
@@ -46,7 +46,7 @@ The native host validates the request and executes local commands using argument
 
 ## Permissions
 
-VDH Lite requests only the permissions needed for its features. Site access is optional and can be granted per site from the popup.
+VDH Lite requests the permissions needed for its current media detector. HTTP/HTTPS host permissions are required because Chrome's `webRequest` API needs declared host access for the request patterns it observes.
 
 ## DRM And Protected Content
 
