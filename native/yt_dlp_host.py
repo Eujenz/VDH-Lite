@@ -220,6 +220,25 @@ def ytdlp_format_for_quality(quality):
     return f"bv*[height<={height}]+ba/b[height<={height}]/best[height<={height}]/best"
 
 
+def valid_format_selector(value):
+    text = str(value or "").strip()
+    if not text or len(text) > 220:
+        return False
+    return re.fullmatch(r"[0-9A-Za-z_.*+/\[\]()<>=!,:-]+", text) is not None
+
+
+def ytdlp_format_selector(message):
+    selector = str(message.get("formatSelector") or "").strip()
+    if valid_format_selector(selector):
+        return selector
+
+    format_id = str(message.get("formatId") or "").strip()
+    if valid_format_selector(format_id):
+        return format_id
+
+    return ytdlp_format_for_quality(message.get("quality"))
+
+
 def command_version(command):
     env = effective_env()
     path = shutil.which(command, path=env.get("PATH"))
@@ -251,6 +270,186 @@ def get_deps():
         "ytDlp": command_version("yt-dlp"),
         "ffmpeg": command_version("ffmpeg"),
         "winget": command_version("winget"),
+    }
+
+
+def as_int(value):
+    try:
+        if value is None:
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def as_float(value):
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def compact_format(fmt):
+    if not isinstance(fmt, dict):
+        return None
+    format_id = str(fmt.get("format_id") or fmt.get("id") or "").strip()
+    if not format_id:
+        return None
+    return {
+        "id": format_id[:80],
+        "formatNote": str(fmt.get("format_note") or fmt.get("format") or "")[:120],
+        "height": as_int(fmt.get("height")),
+        "width": as_int(fmt.get("width")),
+        "fps": as_float(fmt.get("fps")),
+        "abr": as_float(fmt.get("abr")),
+        "tbr": as_float(fmt.get("tbr")),
+        "ext": str(fmt.get("ext") or "")[:16],
+        "vcodec": str(fmt.get("vcodec") or "")[:80],
+        "acodec": str(fmt.get("acodec") or "")[:80],
+        "filesize": as_int(fmt.get("filesize")),
+        "filesizeApprox": as_int(fmt.get("filesize_approx")),
+        "protocol": str(fmt.get("protocol") or "")[:40],
+    }
+
+
+def format_has_video(fmt):
+    return bool(fmt.get("height")) and str(fmt.get("vcodec") or "none").lower() != "none"
+
+
+def format_has_audio(fmt):
+    return str(fmt.get("acodec") or "none").lower() != "none"
+
+
+def format_label(fmt):
+    parts = []
+    if fmt.get("height"):
+        parts.append(f"{fmt['height']}P")
+    elif format_has_audio(fmt):
+        parts.append("Audio")
+    else:
+        parts.append("Format")
+    if fmt.get("ext"):
+        parts.append(str(fmt["ext"]).upper())
+    if fmt.get("fps"):
+        parts.append(f"{fmt['fps']:g}fps")
+    if fmt.get("formatNote"):
+        parts.append(str(fmt["formatNote"])[:40])
+    return " | ".join(parts)
+
+
+def normalize_format_choices(formats):
+    choices = [{
+        "id": "best",
+        "label": "Best available",
+        "quality": "Best",
+        "kind": "best",
+        "selector": "bv*+ba/b",
+        "source": "yt-dlp",
+    }]
+
+    heights = {}
+    audio_formats = []
+    for fmt in formats:
+        if not isinstance(fmt, dict):
+            continue
+        height = fmt.get("height")
+        if height and format_has_video(fmt):
+            heights[height] = max(heights.get(height, 0) or 0, fmt.get("tbr") or 0)
+        if format_has_audio(fmt) and not format_has_video(fmt):
+            audio_formats.append(fmt)
+
+    for height in sorted(heights.keys(), reverse=True)[:8]:
+        choices.append({
+            "id": f"height-{height}",
+            "label": f"{height}P from yt-dlp formats",
+            "quality": f"{height}P",
+            "kind": "video",
+            "height": height,
+            "selector": f"bv*[height<={height}]+ba/b[height<={height}]/best[height<={height}]/best",
+            "source": "yt-dlp",
+        })
+
+    if audio_formats:
+        best_audio = sorted(audio_formats, key=lambda item: item.get("abr") or item.get("tbr") or 0, reverse=True)[0]
+        choices.append({
+            "id": "audio",
+            "label": format_label(best_audio),
+            "quality": "Audio",
+            "kind": "audio",
+            "formatId": best_audio.get("id"),
+            "selector": "ba/bestaudio/best",
+            "source": "yt-dlp",
+        })
+
+    return choices
+
+
+def compact_subtitles(info):
+    subtitles = info.get("subtitles")
+    if not isinstance(subtitles, dict):
+        return []
+    result = []
+    for language, entries in subtitles.items():
+        if not isinstance(entries, list):
+            continue
+        exts = sorted({str(entry.get("ext") or "") for entry in entries if isinstance(entry, dict) and entry.get("ext")})
+        result.append({"language": str(language)[:32], "exts": exts[:8]})
+    return result[:20]
+
+
+def compact_media_entry(info, fallback_url=None):
+    if not isinstance(info, dict):
+        return None
+    compact_formats = []
+    for fmt in info.get("formats") or []:
+        compact = compact_format(fmt)
+        if compact:
+            compact_formats.append(compact)
+
+    compact_formats = sorted(
+        compact_formats,
+        key=lambda item: (
+            item.get("height") or 0,
+            item.get("tbr") or item.get("abr") or 0,
+        ),
+        reverse=True,
+    )[:80]
+
+    webpage_url = info.get("webpage_url") or info.get("original_url") or fallback_url
+    return {
+        "title": sanitize_component(info.get("title"), "media"),
+        "url": webpage_url,
+        "webpageUrl": webpage_url,
+        "playlistPosition": as_int(info.get("playlist_index")) or -1,
+        "duration": as_float(info.get("duration")),
+        "uploader": sanitize_component(info.get("uploader") or info.get("channel"), ""),
+        "thumbnail": info.get("thumbnail"),
+        "formats": compact_formats,
+        "formatChoices": normalize_format_choices(compact_formats),
+        "subtitles": compact_subtitles(info),
+    }
+
+
+def compact_discovery_response(info, fallback_url=None):
+    entries = info.get("entries") if isinstance(info, dict) else None
+    if isinstance(entries, list) and entries:
+        media = [compact_media_entry(entry, fallback_url) for entry in entries[:10]]
+        media = [entry for entry in media if entry]
+    else:
+        media = [compact_media_entry(info, fallback_url)]
+        media = [entry for entry in media if entry]
+
+    first = media[0] if media else {}
+    return {
+        "ok": True,
+        "title": sanitize_component(info.get("title") if isinstance(info, dict) else None, first.get("title") or "media"),
+        "webpageUrl": (info.get("webpage_url") or info.get("original_url") or fallback_url) if isinstance(info, dict) else fallback_url,
+        "duration": as_float(info.get("duration")) if isinstance(info, dict) else None,
+        "thumbnail": (info.get("thumbnail") or first.get("thumbnail")) if isinstance(info, dict) else first.get("thumbnail"),
+        "uploader": sanitize_component(info.get("uploader") or info.get("channel"), "") if isinstance(info, dict) else "",
+        "media": media,
     }
 
 
@@ -841,6 +1040,83 @@ def forwarded_headers(message):
     return forwarded
 
 
+def discover_media(message):
+    url = message.get("url")
+    if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+        raise ValueError("Invalid URL")
+
+    referer = message.get("referer") or message.get("originUrl")
+    user_agent = message.get("userAgent")
+    headers = forwarded_headers(message)
+    deps = get_deps()
+
+    command = [
+        "yt-dlp",
+        "--ignore-config",
+        "--dump-single-json",
+        "--skip-download",
+        "--ignore-errors",
+        "--no-warnings",
+    ]
+    if deps.get("ffmpeg", {}).get("installed") and deps.get("ffmpeg", {}).get("path"):
+        command.extend(["--ffmpeg-location", deps["ffmpeg"]["path"]])
+    if isinstance(referer, str) and referer.startswith(("http://", "https://")):
+        command.extend(["--referer", referer])
+        parsed_referer = urlparse(referer)
+        origin = f"{parsed_referer.scheme}://{parsed_referer.netloc}"
+        headers.setdefault("Referer", referer)
+        headers.setdefault("Origin", origin)
+    if isinstance(user_agent, str) and user_agent.strip():
+        command.extend(["--user-agent", user_agent.strip()])
+    for name, value in headers.items():
+        command.extend(["--add-header", f"{name}: {value}"])
+    command.append(url)
+
+    try:
+        result = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=75,
+            env=effective_env(),
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except FileNotFoundError as error:
+        classified = classify_error(str(error))
+        return {"ok": False, "error": "yt-dlp was not found.", **classified}
+    except subprocess.TimeoutExpired:
+        classified = classify_error("Discovery timed out")
+        return {"ok": False, "error": "Discovery timed out.", **classified}
+
+    output = (result.stdout or "").strip()
+    error_output = (result.stderr or "").strip()
+    if result.returncode != 0 and not output:
+        classified = classify_error(error_output, result.returncode)
+        return {
+            "ok": False,
+            "error": classified["raw"] or f"yt-dlp exited with code {result.returncode}",
+            **classified,
+        }
+
+    try:
+        info = json.loads(output)
+    except json.JSONDecodeError:
+        classified = classify_error(error_output or output, result.returncode)
+        return {
+            "ok": False,
+            "error": "yt-dlp did not return valid discovery JSON.",
+            **classified,
+        }
+
+    response = compact_discovery_response(info, url)
+    response["source"] = "yt-dlp"
+    response["discoveryUrl"] = url
+    return response
+
+
 def loggable_command(command):
     redacted = []
     redact_next = False
@@ -886,7 +1162,7 @@ def start_download(message):
         "-o",
         output_template,
     ]
-    format_selector = ytdlp_format_for_quality(message.get("quality"))
+    format_selector = ytdlp_format_selector(message)
     if format_selector:
         command.extend(["-f", format_selector])
     if isinstance(referer, str) and referer.startswith(("http://", "https://")):
@@ -931,6 +1207,8 @@ def start_download(message):
         "title": title,
         "host": sanitize_component(message.get("host"), "site"),
         "quality": sanitize_component(message.get("quality"), ""),
+        "formatLabel": sanitize_component(message.get("formatLabel"), ""),
+        "formatSelector": format_selector,
         "url": url,
         "downloadDir": str(download_dir),
         "finalPath": None,
@@ -974,6 +1252,8 @@ def main():
             send_message(get_deps())
         elif kind == "install-deps":
             send_message(install_deps())
+        elif kind == "discover":
+            send_message(discover_media(message))
         elif kind == "download":
             send_message(start_download(message))
         elif kind == "status":

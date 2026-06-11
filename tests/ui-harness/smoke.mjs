@@ -27,6 +27,24 @@ try {
   assert.equal(await page.locator("#command-panel").isVisible(), true);
   assert.match(await page.locator("#command-output").inputValue(), /URLs:/);
 
+  await page.locator(".media-card").first().locator("button", { hasText: "Formats" }).click();
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll(".media-quality-select option")].some((option) =>
+      option.textContent.includes("yt-dlp")
+    )
+  );
+  assert.match(await page.locator(".media-card").first().locator(".media-title strong").innerText(), /\(yt-dlp\)/);
+  assert.match(await page.locator(".media-card").first().locator(".badge.success").innerText(), /yt-dlp/);
+  const discoveredDataset = await page.evaluate(() => ({ ...document.documentElement.dataset }));
+  assert.equal(discoveredDataset.harnessLastDiscoveryUrl, "https://watch.example.test/videos/sample-cooking-stream");
+
+  await page.locator(".media-card").first().locator("button", { hasText: "Download" }).click();
+  await page.waitForFunction(() => document.documentElement.dataset.harnessLastDownloadFormatSelector === "bv*+ba/b");
+  const discoveredPayload = await page.evaluate(() => ({ ...document.documentElement.dataset }));
+  assert.equal(discoveredPayload.harnessLastDownloadUrl, "https://watch.example.test/videos/sample-cooking-stream");
+  assert.equal(discoveredPayload.harnessLastDownloadFormatSelector, "bv*+ba/b");
+  assert.equal(discoveredPayload.harnessLastDownloadFormatLabel, "Best available");
+
   await page.goto(`${baseUrl}?scenario=failed`);
   await page.waitForSelector(".media-card.failed");
   await page.locator("[data-filter='failed']").click();

@@ -329,6 +329,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type === "native-discover" && typeof message.url === "string") {
+    chrome.runtime.sendNativeMessage(nativeHostName, { ...message, type: "discover" }, (response) => {
+      if (chrome.runtime.lastError) {
+        sendResponse({
+          ok: false,
+          error: chrome.runtime.lastError.message,
+          category: "binary-missing",
+          label: "Native host not connected",
+          summary: "Chrome could not connect to the VDH Lite native host.",
+          nextAction: "Run install.bat, restart Chrome, then test the native host again.",
+          retryable: true
+        });
+        return;
+      }
+      sendResponse(response || { ok: false, error: "Native host returned no response" });
+    });
+    return true;
+  }
+
   if (message?.type === "native-status") {
     chrome.runtime.sendNativeMessage(nativeHostName, { type: "status" }, (response) => {
       if (chrome.runtime.lastError) {

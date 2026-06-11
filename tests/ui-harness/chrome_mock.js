@@ -12,10 +12,128 @@ function createDownloadJob(message) {
     title: message.title || message.host || "Harness download",
     host: message.host || "example.test",
     quality: message.quality || "Best",
+    formatLabel: message.formatLabel || "",
+    formatSelector: message.formatSelector || "",
     url: message.url,
     percent: 0,
     phase: "queued",
     startedAt: now
+  };
+}
+
+function updateHarnessDataset(message) {
+  const dataset = document.documentElement.dataset;
+  dataset.harnessLastMessage = message?.type || "";
+  if (message?.type === "native-discover") {
+    dataset.harnessLastDiscoveryUrl = message.url || "";
+  }
+  if (message?.type === "native-download") {
+    dataset.harnessLastDownloadUrl = message.url || "";
+    dataset.harnessLastDownloadFormatLabel = message.formatLabel || "";
+    dataset.harnessLastDownloadFormatSelector = message.formatSelector || "";
+  }
+}
+
+function discoveryForMessage(state, message) {
+  const item = state.items.find((candidate) => candidate.url === message.url) || state.items[0] || {};
+  return {
+    ok: true,
+    source: "yt-dlp",
+    title: "Sample Cooking Stream (yt-dlp)",
+    webpageUrl: state.tab.url,
+    duration: 194,
+    thumbnail: item.thumbnail || null,
+    uploader: "Example Studio",
+    media: [
+      {
+        title: "Sample Cooking Stream (yt-dlp)",
+        url: state.tab.url,
+        webpageUrl: state.tab.url,
+        playlistPosition: -1,
+        duration: 194,
+        uploader: "Example Studio",
+        thumbnail: item.thumbnail || null,
+        formats: [
+          {
+            id: "137",
+            height: 1080,
+            width: 1920,
+            fps: 30,
+            abr: null,
+            tbr: 4200,
+            ext: "mp4",
+            vcodec: "avc1.640028",
+            acodec: "none",
+            filesize: 102400000,
+            protocol: "https"
+          },
+          {
+            id: "136",
+            height: 720,
+            width: 1280,
+            fps: 30,
+            abr: null,
+            tbr: 2400,
+            ext: "mp4",
+            vcodec: "avc1.4d401f",
+            acodec: "none",
+            filesize: 68200000,
+            protocol: "https"
+          },
+          {
+            id: "140",
+            height: null,
+            width: null,
+            fps: null,
+            abr: 128,
+            tbr: 128,
+            ext: "m4a",
+            vcodec: "none",
+            acodec: "mp4a.40.2",
+            filesize: 4200000,
+            protocol: "https"
+          }
+        ],
+        formatChoices: [
+          {
+            id: "best",
+            label: "Best available",
+            quality: "Best",
+            kind: "best",
+            selector: "bv*+ba/b",
+            source: "yt-dlp"
+          },
+          {
+            id: "height-1080",
+            label: "1080P from yt-dlp formats",
+            quality: "1080P",
+            kind: "video",
+            height: 1080,
+            selector: "bv*[height<=1080]+ba/b[height<=1080]/best[height<=1080]/best",
+            source: "yt-dlp"
+          },
+          {
+            id: "height-720",
+            label: "720P from yt-dlp formats",
+            quality: "720P",
+            kind: "video",
+            height: 720,
+            selector: "bv*[height<=720]+ba/b[height<=720]/best[height<=720]/best",
+            source: "yt-dlp"
+          },
+          {
+            id: "audio",
+            label: "Audio | M4A | 128k",
+            quality: "Audio",
+            kind: "audio",
+            formatId: "140",
+            selector: "ba/bestaudio/best",
+            source: "yt-dlp"
+          }
+        ],
+        subtitles: [{ language: "en", exts: ["vtt"] }]
+      }
+    ]
   };
 }
 
@@ -129,6 +247,7 @@ export function installChromeMock(scenario) {
       lastError: null,
       async sendMessage(message) {
         state.messages.push(clone(message));
+        updateHarnessDataset(message);
 
         switch (message?.type) {
           case "list-media":
@@ -165,6 +284,8 @@ export function installChromeMock(scenario) {
             };
           case "native-status":
             return { ok: true, jobs: clone(state.jobs) };
+          case "native-discover":
+            return discoveryForMessage(state, message);
           case "native-diagnostics":
             return diagnosticsForState(state, message.jobId || null);
           case "native-clear-jobs":

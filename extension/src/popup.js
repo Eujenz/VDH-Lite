@@ -38,6 +38,9 @@ let activeTabInfo = {};
 let pendingMediaRefresh = null;
 let activeFilter = "all";
 const selectedGroupQualities = new Map();
+const discoveryByGroupId = new Map();
+const discoveryErrorsByGroupId = new Map();
+const discoveringGroupIds = new Set();
 
 function setStatus(title, detail = "", tone = "") {
   statusEl.textContent = title;
@@ -152,6 +155,14 @@ function describeUrl(url) {
   }
 }
 
+function isHttpUrl(url) {
+  try {
+    return ["http:", "https:"].includes(new URL(url).protocol);
+  } catch {
+    return false;
+  }
+}
+
 function defaultTitleForItem(item) {
   const itemTitle = String(item?.title || item?.name || "").trim();
   if (itemTitle) return itemTitle.slice(0, 140);
@@ -263,6 +274,80 @@ function qualityOptionsForItem(item) {
   return [...values];
 }
 
+function formatDuration(seconds) {
+  const value = Number(seconds);
+  if (!Number.isFinite(value) || value <= 0) return "";
+  const rounded = Math.round(value);
+  const minutes = Math.floor(rounded / 60);
+  const rest = rounded % 60;
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  if (hours) return `${hours}:${String(mins).padStart(2, "0")}:${String(rest).padStart(2, "0")}`;
+  return `${mins}:${String(rest).padStart(2, "0")}`;
+}
+
+function formatChoiceLabel(choice) {
+  const parts = [];
+  if (choice.label) parts.push(choice.label);
+  else if (choice.quality) parts.push(choice.quality);
+  if (choice.source === "yt-dlp") parts.push("yt-dlp");
+  return parts.join(" | ") || "Discovered format";
+}
+
+function preferredDiscoveryUrl(group, item, tab) {
+  return [group.pageUrl, item?.originUrl, tab?.url, item?.url].find(isHttpUrl) || item?.url || "";
+}
+
+function itemForDiscoveredDownload(group, media, discovery) {
+  const fallbackItem = group.primaryItem || group.items[0];
+  const url = [media?.webpageUrl, media?.url, discovery?.webpageUrl, group.pageUrl, fallbackItem?.url].find(isHttpUrl);
+  if (!url) return fallbackItem;
+  return {
+    ...fallbackItem,
+    url,
+    originUrl: group.pageUrl || fallbackItem?.originUrl || url,
+    requestHeaders: fallbackItem?.requestHeaders || {}
+  };
+}
+
+function applyDiscoveryToGroup(group) {
+  const discovery = discoveryByGroupId.get(group.id);
+  const discoveryError = discoveryErrorsByGroupId.get(group.id);
+  if (discoveryError) group.discoveryError = discoveryError;
+  if (!discovery?.ok) return group;
+
+  const media = Array.isArray(discovery.media) && discovery.media.length ? discovery.media[0] : null;
+  group.discovery = discovery;
+  group.title = media?.title || discovery.title || group.title;
+  group.thumbnail = media?.thumbnail || discovery.thumbnail || group.thumbnail;
+  group.duration = media?.duration || discovery.duration || null;
+  group.uploader = media?.uploader || discovery.uploader || "";
+  group.formats = media?.formats || [];
+  const downloadItem = itemForDiscoveredDownload(group, media, discovery);
+  if (downloadItem?.url) {
+    group.urls.add(downloadItem.url);
+    group.host = describeUrl(downloadItem.url).host || group.host;
+  }
+
+  const choices = Array.isArray(media?.formatChoices) ? media.formatChoices : [];
+  if (choices.length) {
+    group.qualityOptions = choices.map((choice) => ({
+      item: downloadItem,
+      quality: choice.quality || choice.label || "Best",
+      label: formatChoiceLabel(choice),
+      formatId: choice.formatId || "",
+      formatSelector: choice.selector || "",
+      formatLabel: choice.label || "",
+      kind: choice.kind || "",
+      source: choice.source || "yt-dlp"
+    }));
+    group.qualities = group.qualityOptions.map((option) => option.quality);
+    group.score += 25;
+  }
+
+  return group;
+}
+
 function buildCandidateGroups(items) {
   const groups = new Map();
   for (const item of items) {
@@ -314,7 +399,7 @@ function buildCandidateGroups(items) {
       group.qualities = group.qualityOptions.map((option) => option.quality);
       group.primaryItem = group.qualityOptions[0]?.item || group.items[0];
       group.sourceList = [...group.sources];
-      return group;
+      return applyDiscoveryToGroup(group);
     })
     .sort((a, b) => b.score - a.score || b.detectedAt - a.detectedAt);
 }
@@ -409,6 +494,32 @@ function renderBadges(group, job) {
     meta.append(groupedBadge);
   }
 
+  if (group.discovery) {
+    const discoveredBadge = document.createElement("span");
+    discoveredBadge.className = "badge success";
+    discoveredBadge.textContent = "yt-dlp";
+    meta.append(discoveredBadge);
+  } else if (group.discoveryError) {
+    const failedBadge = document.createElement("span");
+    failedBadge.className = "badge danger";
+    failedBadge.textContent = "Discovery failed";
+    meta.append(failedBadge);
+  }
+
+  if (group.duration) {
+    const durationBadge = document.createElement("span");
+    durationBadge.className = "badge neutral";
+    durationBadge.textContent = formatDuration(group.duration);
+    meta.append(durationBadge);
+  }
+
+  if (group.uploader) {
+    const uploaderBadge = document.createElement("span");
+    uploaderBadge.className = "badge neutral";
+    uploaderBadge.textContent = group.uploader;
+    meta.append(uploaderBadge);
+  }
+
   if (job) {
     const state = stateForJob(job);
     const jobBadge = document.createElement("span");
@@ -443,7 +554,7 @@ function renderQualityPicker(group) {
     const itemInfo = describeUrl(option.item.url);
     const optionEl = document.createElement("option");
     optionEl.value = String(index);
-    optionEl.textContent = `${option.quality} | ${itemInfo.host || group.host}`;
+    optionEl.textContent = option.label || `${option.quality} | ${itemInfo.host || group.host}`;
     if (preferred === option.quality) optionEl.selected = true;
     select.append(optionEl);
   });
@@ -478,6 +589,33 @@ function showCandidateDetails(group, job) {
     ...group.items.map((item) => `- ${item.url}`)
   ];
 
+  if (group.discovery) {
+    lines.push(
+      "",
+      "Discovery:",
+      `- Source: yt-dlp`,
+      `- Title: ${group.discovery.title || group.title}`,
+      `- Duration: ${formatDuration(group.duration) || "unknown"}`,
+      `- Uploader: ${group.uploader || "unknown"}`,
+      `- Formats: ${group.formats?.length || 0}`
+    );
+    for (const format of (group.formats || []).slice(0, 8)) {
+      const label = [format.id, format.height ? `${format.height}P` : "", format.ext, format.vcodec, format.acodec]
+        .filter(Boolean)
+        .join(" | ");
+      lines.push(`  - ${label}`);
+    }
+  }
+
+  if (group.discoveryError) {
+    lines.push(
+      "",
+      "Discovery failed:",
+      `- ${group.discoveryError.label || group.discoveryError.category || "Unknown"}`,
+      `- ${group.discoveryError.summary || group.discoveryError.error || "No details"}`
+    );
+  }
+
   if (job) {
     lines.push(
       "",
@@ -502,12 +640,60 @@ async function removeCandidate(group) {
   const urls = group.items.map((item) => item.url);
   await chrome.runtime.sendMessage({ type: "remove-media", urls });
   selectedGroupQualities.delete(group.id);
+  discoveryByGroupId.delete(group.id);
+  discoveryErrorsByGroupId.delete(group.id);
   await listMedia();
+}
+
+async function discoverFormats(group) {
+  const item = group.primaryItem || group.items[0];
+  if (!item?.url || discoveringGroupIds.has(group.id)) return;
+
+  discoveringGroupIds.add(group.id);
+  discoveryByGroupId.delete(group.id);
+  discoveryErrorsByGroupId.delete(group.id);
+  setStatus("Loading formats", "Asking yt-dlp for title, metadata, and available formats.", "warning");
+  renderMediaView({ preserveStatus: true });
+
+  try {
+    const tab = await getActiveTabInfo();
+    const discoveryUrl = preferredDiscoveryUrl(group, item, tab);
+    const response = await chrome.runtime.sendMessage({
+      type: "native-discover",
+      url: discoveryUrl,
+      referer: item.originUrl || group.pageUrl || tab.url || "",
+      originUrl: group.pageUrl || item.originUrl || tab.url || "",
+      userAgent: navigator.userAgent || "",
+      requestHeaders: item.requestHeaders || {}
+    });
+
+    if (response?.ok) {
+      discoveryByGroupId.set(group.id, response);
+      discoveryErrorsByGroupId.delete(group.id);
+      const media = Array.isArray(response.media) ? response.media[0] : null;
+      const count = media?.formats?.length || 0;
+      setStatus("Formats loaded", `${count} yt-dlp format${count === 1 ? "" : "s"} found.`, "ready");
+    } else {
+      discoveryErrorsByGroupId.set(group.id, response || { error: "Discovery failed" });
+      setStatus(
+        "Format discovery failed",
+        response?.summary || response?.error || "Direct download fallback is still available.",
+        "warning"
+      );
+    }
+  } catch (error) {
+    discoveryErrorsByGroupId.set(group.id, { error: error?.message || "Discovery failed" });
+    setStatus("Format discovery failed", error?.message || "Direct download fallback is still available.", "warning");
+  } finally {
+    discoveringGroupIds.delete(group.id);
+    renderMediaView({ preserveStatus: true });
+  }
 }
 
 function renderMediaCard(group) {
   const job = jobForGroup(group);
   const state = stateForJob(job);
+  const discovering = discoveringGroupIds.has(group.id);
   const li = document.createElement("li");
   li.className = `item media-card ${state}`;
 
@@ -537,8 +723,15 @@ function renderMediaCard(group) {
   downloadButton.textContent = state === "failed" ? "Retry" : "Download";
   downloadButton.addEventListener("click", () => {
     const option = selectedOptionForGroup(group, select);
-    runNativeDownload(option.item, option.quality);
+    runNativeDownload(option.item, option);
   });
+
+  const discoverButton = document.createElement("button");
+  discoverButton.type = "button";
+  discoverButton.className = "secondary";
+  discoverButton.textContent = discovering ? "Loading" : group.discovery ? "Formats" : "Formats";
+  discoverButton.disabled = discovering;
+  discoverButton.addEventListener("click", () => discoverFormats(group));
 
   const detailsButton = document.createElement("button");
   detailsButton.type = "button";
@@ -552,12 +745,12 @@ function renderMediaCard(group) {
   removeButton.textContent = "Remove";
   removeButton.addEventListener("click", () => removeCandidate(group));
 
-  actions.append(downloadButton, detailsButton, removeButton);
+  actions.append(downloadButton, discoverButton, detailsButton, removeButton);
   li.append(thumb, content, actions);
   return li;
 }
 
-function renderMediaView() {
+function renderMediaView({ preserveStatus = false } = {}) {
   currentGroups = buildCandidateGroups(currentItems);
   renderFilterChips(currentGroups);
   itemsEl.innerHTML = "";
@@ -567,7 +760,7 @@ function renderMediaView() {
     ? `${currentGroups.length} candidate${currentGroups.length === 1 ? "" : "s"} grouped from ${currentItems.length} source${currentItems.length === 1 ? "" : "s"}`
     : "No candidates found";
 
-  if (currentGroups.length) updateMediaStatus(currentGroups);
+  if (currentGroups.length && !preserveStatus) updateMediaStatus(currentGroups);
 
   if (!currentGroups.length) {
     const empty = document.createElement("li");
@@ -657,6 +850,24 @@ async function getActiveTabInfo() {
   return tab || {};
 }
 
+function normalizeDownloadChoice(item, qualityOrOption) {
+  if (typeof qualityOrOption === "object" && qualityOrOption) {
+    return {
+      quality: qualityOrOption.quality || detectQuality(item),
+      formatId: qualityOrOption.formatId || "",
+      formatSelector: qualityOrOption.formatSelector || "",
+      formatLabel: qualityOrOption.formatLabel || qualityOrOption.label || ""
+    };
+  }
+
+  return {
+    quality: qualityOrOption || detectQuality(item),
+    formatId: "",
+    formatSelector: "",
+    formatLabel: ""
+  };
+}
+
 function updatePageHost(tab) {
   try {
     pageHostEl.textContent = tab?.url ? new URL(tab.url).hostname : "Current tab";
@@ -671,7 +882,7 @@ async function runNativeDownload(item, qualityOverride) {
   const tab = await getActiveTabInfo();
   activeTabInfo = tab;
   const info = describeUrl(item.url);
-  const quality = qualityOverride || detectQuality(item);
+  const downloadChoice = normalizeDownloadChoice(item, qualityOverride);
   const response = await chrome.runtime.sendMessage({
     type: "native-download",
     url: item.url,
@@ -681,7 +892,10 @@ async function runNativeDownload(item, qualityOverride) {
     requestHeaders: item.requestHeaders || {},
     title: tab.title || info.name,
     host: info.host,
-    quality,
+    quality: downloadChoice.quality,
+    formatId: downloadChoice.formatId,
+    formatSelector: downloadChoice.formatSelector,
+    formatLabel: downloadChoice.formatLabel,
     downloadDir: downloadDirInput.value.trim() || DEFAULT_DOWNLOAD_DIR
   });
 
