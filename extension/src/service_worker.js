@@ -11,6 +11,38 @@ const requestHeaderCache = new Map();
 const nativeHostName = "com.vdhlite.ytdlp";
 const FORWARDED_HEADER_NAMES = new Set(["referer", "origin", "user-agent", "accept", "accept-language", "cookie"]);
 
+function setActionBadge(tabId, text, color) {
+  if (tabId == null || tabId < 0 || !chrome.action?.setBadgeText) return;
+  chrome.action.setBadgeText({ tabId, text });
+  if (color && chrome.action.setBadgeBackgroundColor) {
+    chrome.action.setBadgeBackgroundColor({ tabId, color });
+  }
+}
+
+function updateDetectedBadge(tabId) {
+  const items = (tabMedia.get(tabId) || []).filter((item) => scoreItem(item) >= 0);
+  const count = items.length;
+  const text = count ? String(Math.min(count, 99)) : "";
+  setActionBadge(tabId, text, "#0f6f83");
+}
+
+function updateBadgeFromJobs(jobs = []) {
+  chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
+    if (!tab?.id) return;
+    const failed = jobs.some((job) => job.status === "failed");
+    const running = jobs.filter((job) => job.running || job.status === "running" || job.status === "queued").length;
+    if (failed) {
+      setActionBadge(tab.id, "!", "#b42335");
+      return;
+    }
+    if (running) {
+      setActionBadge(tab.id, `↓${Math.min(running, 9)}`, "#0f6f83");
+      return;
+    }
+    updateDetectedBadge(tab.id);
+  });
+}
+
 function normalizeUrl(url) {
   try {
     const parsed = new URL(url);
@@ -156,6 +188,7 @@ function pushMedia(tabId, item) {
   if (current.some((existing) => existing.url === item.url)) return;
   current.unshift(item);
   tabMedia.set(tabId, current.slice(0, MAX_ITEMS_PER_TAB));
+  updateDetectedBadge(tabId);
   hydrateM3u8Quality(tabId, item.url, item.quality === "HLS");
 }
 
@@ -211,6 +244,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === "list-media") {
     chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
       const items = tab ? tabMedia.get(tab.id) || [] : [];
+      if (tab) updateDetectedBadge(tab.id);
       sendResponse({ items: [...items].filter((item) => scoreItem(item) >= 0).sort((a, b) => scoreItem(b) - scoreItem(a)) });
     });
     return true;
@@ -219,6 +253,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === "clear-media") {
     chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
       if (tab) tabMedia.delete(tab.id);
+      if (tab) updateDetectedBadge(tab.id);
+      sendResponse({ ok: true });
+    });
+    return true;
+  }
+
+  if (message?.type === "remove-media") {
+    chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
+      const urls = new Set(Array.isArray(message.urls) ? message.urls : [message.url].filter(Boolean));
+      if (tab && urls.size) {
+        const items = tabMedia.get(tab.id) || [];
+        tabMedia.set(tab.id, items.filter((item) => !urls.has(item.url)));
+        updateDetectedBadge(tab.id);
+      }
       sendResponse({ ok: true });
     });
     return true;
@@ -261,6 +309,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ ok: false, error: chrome.runtime.lastError.message });
         return;
       }
+      if (response?.ok) updateBadgeFromJobs(response.jobs || []);
       sendResponse(response || { ok: false, error: "Native host returned no response" });
     });
     return true;

@@ -1,0 +1,44 @@
+import assert from "node:assert/strict";
+import { createHarnessServer } from "./serve.mjs";
+
+let chromium;
+try {
+  ({ chromium } = await import("playwright"));
+} catch {
+  console.error("Playwright is not installed. Install it or run this harness through the Codex Browser plugin.");
+  process.exit(2);
+}
+
+const server = await createHarnessServer({ port: 0 });
+const address = server.address();
+const baseUrl = `http://127.0.0.1:${address.port}/tests/ui-harness/index.html`;
+const browser = await chromium.launch();
+
+try {
+  const page = await browser.newPage({ viewport: { width: 520, height: 720 } });
+
+  await page.goto(`${baseUrl}?scenario=detected`);
+  await page.waitForSelector(".media-card");
+  assert.equal(await page.locator(".media-card").count(), 3);
+  assert.equal(await page.locator(".media-quality-select").count(), 3);
+  assert.match(await page.locator("#media-summary").innerText(), /3 candidates grouped from 4 sources/);
+
+  await page.locator(".media-card").first().locator("button", { hasText: "Details" }).click();
+  assert.equal(await page.locator("#command-panel").isVisible(), true);
+  assert.match(await page.locator("#command-output").inputValue(), /URLs:/);
+
+  await page.goto(`${baseUrl}?scenario=failed`);
+  await page.waitForSelector(".media-card.failed");
+  await page.locator("[data-filter='failed']").click();
+  assert.equal(await page.locator(".media-card.failed").count(), 1);
+  assert.equal(await page.locator(".media-card.failed button").first().innerText(), "Retry");
+
+  await page.goto(`${baseUrl}?scenario=empty`);
+  await page.waitForSelector(".empty-state");
+  assert.match(await page.locator("#media-summary").innerText(), /No candidates found/);
+} finally {
+  await browser.close();
+  server.close();
+}
+
+console.log("UI harness smoke test passed.");

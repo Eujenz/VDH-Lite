@@ -47,6 +47,17 @@ Before starting any stage:
 5. Keep native command execution as argument arrays, never shell-concatenated strings.
 6. Validate with the listed checks before finishing.
 
+Version control reminders:
+
+- Before committing, confirm the working tree scope and stage only task-related files.
+- Before pulling or pushing, check whether the local branch has diverged from its upstream.
+- When history has diverged, explicitly remind the user of the practical options:
+  - `git merge` when preserving the visible branch history is preferred.
+  - `git rebase` when replaying local commits onto the updated upstream keeps the history easier to scan.
+- Prefer asking before choosing merge or rebase if both are viable and the branch is shared or already pushed.
+- For local, unpushed agent work, prefer rebase when it avoids an unnecessary merge commit.
+- Do not rebase commits that other collaborators may already depend on unless the user explicitly approves.
+
 Recommended baseline validation:
 
 ```powershell

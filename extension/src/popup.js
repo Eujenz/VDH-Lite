@@ -3,6 +3,7 @@ const statusCard = document.querySelector("#status-card");
 const statusDetailEl = document.querySelector("#status-detail");
 const pageHostEl = document.querySelector("#page-host");
 const mediaSummaryEl = document.querySelector("#media-summary");
+const mediaFiltersEl = document.querySelector("#media-filters");
 const itemsEl = document.querySelector("#items");
 const refreshButton = document.querySelector("#refresh");
 const clearButton = document.querySelector("#clear");
@@ -13,8 +14,6 @@ const downloadDirInput = document.querySelector("#download-dir");
 const browseDirButton = document.querySelector("#browse-dir");
 const resetDirButton = document.querySelector("#reset-dir");
 const testNativeButton = document.querySelector("#test-native");
-const qualitySelect = document.querySelector("#quality-select");
-const runSelectedButton = document.querySelector("#run-selected");
 const jobsEl = document.querySelector("#jobs");
 const clearJobsButton = document.querySelector("#clear-jobs");
 const settingsToggle = document.querySelector("#settings-toggle");
@@ -23,10 +22,21 @@ const depsStatus = document.querySelector("#deps-status");
 const installDepsButton = document.querySelector("#install-deps");
 
 const DEFAULT_DOWNLOAD_DIR = "%USERPROFILE%\\Downloads\\VDH Lite";
+const FILTERS = [
+  { id: "all", label: "All" },
+  { id: "detected", label: "Detected" },
+  { id: "active", label: "Active" },
+  { id: "finished", label: "Finished" },
+  { id: "failed", label: "Failed" }
+];
+
 let currentItems = [];
-let currentQualityOptions = [];
+let currentGroups = [];
+let currentJobs = [];
 let activeTabInfo = {};
 let pendingMediaRefresh = null;
+let activeFilter = "all";
+const selectedGroupQualities = new Map();
 
 function setStatus(title, detail = "", tone = "") {
   statusEl.textContent = title;
@@ -49,6 +59,8 @@ function describeUrl(url) {
 }
 
 function defaultTitleForItem(item) {
+  const itemTitle = String(item?.title || item?.name || "").trim();
+  if (itemTitle) return itemTitle.slice(0, 140);
   const tabTitle = activeTabInfo.title?.trim();
   if (tabTitle) return tabTitle.replace(/\s+[-|]\s+.*$/, "").slice(0, 140);
   return describeUrl(item.url).name;
@@ -61,6 +73,29 @@ function labelForMediaType(type) {
   if (normalized === "dom") return "Page";
   if (normalized === "other") return "Other";
   return type || "Media";
+}
+
+function mediaFamily(itemOrUrl) {
+  const item = typeof itemOrUrl === "object" ? itemOrUrl : { url: itemOrUrl };
+  const url = String(item?.url || "").toLowerCase();
+  const contentType = String(item?.contentType || "").toLowerCase();
+  if (contentType.includes("application/vnd.apple.mpegurl") || contentType.includes("application/x-mpegurl")) return "hls";
+  if (contentType.includes("application/dash+xml")) return "dash";
+  if (contentType.includes("audio/")) return "audio";
+  if (contentType.includes("video/")) return "video";
+  if (url.includes(".m3u8")) return "hls";
+  if (url.includes(".mpd")) return "dash";
+  if (/\.(m4a|mp3|aac|ogg)(\?|#|$)/i.test(url)) return "audio";
+  if (/\.(mp4|webm|mov|mkv|ts|m4s)(\?|#|$)/i.test(url)) return "video";
+  return "unknown";
+}
+
+function labelForFamily(family) {
+  if (family === "hls") return "HLS";
+  if (family === "dash") return "DASH";
+  if (family === "video") return "Video";
+  if (family === "audio") return "Audio";
+  return "Media";
 }
 
 function detectQuality(itemOrUrl) {
@@ -84,13 +119,397 @@ function detectQuality(itemOrUrl) {
   return "Quality unknown";
 }
 
-function qualityRank(item) {
-  const quality = detectQuality(item);
-  const match = quality.match(/^(\d+)P$/);
+function qualityRank(itemOrQuality) {
+  const quality = typeof itemOrQuality === "string" ? itemOrQuality : detectQuality(itemOrQuality);
+  const match = String(quality).match(/^(\d+)P$/i);
   if (match) return Number(match[1]) * 1000;
   if (quality === "HLS") return 500000;
   if (quality === "DASH") return 450000;
+  if (quality === "MP4") return 300000;
+  if (quality === "WEBM") return 250000;
+  if (quality === "Audio") return 150000;
   return 1000;
+}
+
+function normalizeMediaPath(pathname) {
+  const parts = String(pathname || "").split("/").map((part) => {
+    const normalized = part
+      .replace(/(^|[-_.])(?:2160|1440|1080|720|540|480|360|240)p(?=[-_.]|$)/ig, "$1:quality")
+      .replace(/^\d{3,4}x\d{3,4}$/i, ":quality");
+    if (/^(?:2160|1440|1080|720|540|480|360|240)p?$/i.test(normalized)) return ":quality";
+    if (/^(?:seg|segment|chunk)[-_.]?\d+\.(?:ts|m4s)$/i.test(normalized)) return ":segment";
+    return normalized;
+  });
+  return parts.join("/");
+}
+
+function groupKeyForItem(item) {
+  try {
+    const parsed = new URL(item.url);
+    parsed.hash = "";
+    parsed.search = "";
+    return `${mediaFamily(item)}|${parsed.hostname}|${normalizeMediaPath(parsed.pathname)}`;
+  } catch {
+    return `${mediaFamily(item)}|${String(item.url || "")}`;
+  }
+}
+
+function sourceLabelForItem(item) {
+  return item.source || labelForMediaType(item.type);
+}
+
+function qualityOptionsForItem(item) {
+  const values = new Set();
+  if (Array.isArray(item.qualities)) {
+    for (const quality of item.qualities) {
+      if (quality) values.add(String(quality));
+    }
+  }
+  values.add(detectQuality(item));
+  return [...values];
+}
+
+function buildCandidateGroups(items) {
+  const groups = new Map();
+  for (const item of items) {
+    const key = groupKeyForItem(item);
+    const info = describeUrl(item.url);
+    if (!groups.has(key)) {
+      groups.set(key, {
+        id: key,
+        sourceUrl: item.url,
+        pageUrl: item.originUrl || activeTabInfo.url || "",
+        host: info.host,
+        title: defaultTitleForItem(item),
+        type: mediaFamily(item),
+        thumbnail: item.thumbnail || null,
+        detectedAt: item.timeStamp || Date.now(),
+        score: qualityRank(item),
+        sources: new Set(),
+        urls: new Set(),
+        items: [],
+        optionMap: new Map()
+      });
+    }
+
+    const group = groups.get(key);
+    group.items.push(item);
+    group.urls.add(item.url);
+    group.sources.add(sourceLabelForItem(item));
+    if (item.thumbnail && !group.thumbnail) group.thumbnail = item.thumbnail;
+    if ((item.timeStamp || 0) > group.detectedAt) group.detectedAt = item.timeStamp;
+    if (qualityRank(item) > group.score) {
+      group.score = qualityRank(item);
+      group.sourceUrl = item.url;
+      group.title = defaultTitleForItem(item);
+      group.host = info.host;
+    }
+
+    for (const quality of qualityOptionsForItem(item)) {
+      const existing = group.optionMap.get(quality);
+      if (!existing || qualityRank(item) > qualityRank(existing.item)) {
+        group.optionMap.set(quality, { quality, item });
+      }
+    }
+  }
+
+  return [...groups.values()]
+    .map((group) => {
+      const options = [...group.optionMap.values()].sort((a, b) => qualityRank(b.quality) - qualityRank(a.quality));
+      group.qualityOptions = options.length ? options : [{ quality: "Best", item: group.items[0] }];
+      group.qualities = group.qualityOptions.map((option) => option.quality);
+      group.primaryItem = group.qualityOptions[0]?.item || group.items[0];
+      group.sourceList = [...group.sources];
+      return group;
+    })
+    .sort((a, b) => b.score - a.score || b.detectedAt - a.detectedAt);
+}
+
+function stateForJob(job) {
+  if (!job) return "detected";
+  if (job.running || job.status === "running" || job.status === "queued") return "active";
+  if (job.status === "failed") return "failed";
+  if (job.status === "finished") return "finished";
+  return "detected";
+}
+
+function jobForGroup(group) {
+  const jobs = currentJobs.filter((job) => group.urls.has(job.url));
+  if (!jobs.length) return null;
+  const priority = { active: 4, failed: 3, finished: 2, detected: 1 };
+  return jobs.sort((a, b) => {
+    const stateDelta = priority[stateForJob(b)] - priority[stateForJob(a)];
+    if (stateDelta) return stateDelta;
+    return String(b.startedAt || "").localeCompare(String(a.startedAt || ""));
+  })[0];
+}
+
+function stateForGroup(group) {
+  return stateForJob(jobForGroup(group));
+}
+
+function filterMatches(group) {
+  if (activeFilter === "all") return true;
+  return stateForGroup(group) === activeFilter;
+}
+
+function countGroupsByState(groups) {
+  const counts = { all: groups.length, detected: 0, active: 0, finished: 0, failed: 0 };
+  for (const group of groups) {
+    counts[stateForGroup(group)] += 1;
+  }
+  return counts;
+}
+
+function renderFilterChips(groups) {
+  if (!mediaFiltersEl) return;
+  const counts = countGroupsByState(groups);
+  mediaFiltersEl.innerHTML = "";
+  for (const filter of FILTERS) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `filter-chip${activeFilter === filter.id ? " active" : ""}`;
+    button.dataset.filter = filter.id;
+    button.textContent = `${filter.label} ${counts[filter.id] || 0}`;
+    button.disabled = filter.id !== "all" && !counts[filter.id];
+    mediaFiltersEl.append(button);
+  }
+}
+
+function renderThumbnail(group) {
+  const thumb = document.createElement("div");
+  thumb.className = "media-thumb";
+  if (group.thumbnail) {
+    const img = document.createElement("img");
+    img.alt = "";
+    img.src = group.thumbnail;
+    thumb.append(img);
+  } else {
+    thumb.textContent = labelForFamily(group.type);
+  }
+  return thumb;
+}
+
+function renderBadges(group, job) {
+  const meta = document.createElement("div");
+  meta.className = "meta media-tags";
+
+  const qualityBadge = document.createElement("span");
+  qualityBadge.className = "badge quality-badge";
+  qualityBadge.textContent = group.qualities[0] || detectQuality(group.primaryItem);
+
+  const typeBadge = document.createElement("span");
+  typeBadge.className = "badge neutral";
+  typeBadge.textContent = labelForFamily(group.type);
+
+  const sourceBadge = document.createElement("span");
+  sourceBadge.className = "badge source";
+  sourceBadge.textContent = group.sourceList.join(" + ") || "Detected";
+
+  meta.append(qualityBadge, typeBadge, sourceBadge);
+
+  if (group.items.length > 1) {
+    const groupedBadge = document.createElement("span");
+    groupedBadge.className = "badge neutral";
+    groupedBadge.textContent = `${group.items.length} sources`;
+    meta.append(groupedBadge);
+  }
+
+  if (job) {
+    const state = stateForJob(job);
+    const jobBadge = document.createElement("span");
+    jobBadge.className = `badge ${state === "failed" ? "danger" : state === "finished" ? "success" : "neutral"}`;
+    jobBadge.textContent = state === "active" ? job.phase || "Active" : state.charAt(0).toUpperCase() + state.slice(1);
+    meta.append(jobBadge);
+  }
+
+  return meta;
+}
+
+function selectedOptionForGroup(group, select) {
+  const option = group.qualityOptions[Number(select.value)] || group.qualityOptions[0];
+  return option || { quality: detectQuality(group.primaryItem), item: group.primaryItem };
+}
+
+function renderQualityPicker(group) {
+  const row = document.createElement("div");
+  row.className = "quality-row";
+
+  const label = document.createElement("label");
+  const selectId = `quality-${Math.abs(hashString(group.id))}`;
+  label.setAttribute("for", selectId);
+  label.textContent = "Quality";
+
+  const select = document.createElement("select");
+  select.id = selectId;
+  select.className = "media-quality-select";
+
+  const preferred = selectedGroupQualities.get(group.id);
+  group.qualityOptions.forEach((option, index) => {
+    const itemInfo = describeUrl(option.item.url);
+    const optionEl = document.createElement("option");
+    optionEl.value = String(index);
+    optionEl.textContent = `${option.quality} | ${itemInfo.host || group.host}`;
+    if (preferred === option.quality) optionEl.selected = true;
+    select.append(optionEl);
+  });
+
+  select.addEventListener("change", () => {
+    const option = selectedOptionForGroup(group, select);
+    selectedGroupQualities.set(group.id, option.quality);
+  });
+
+  row.append(label, select);
+  return { row, select };
+}
+
+function hashString(value) {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = ((hash << 5) - hash + value.charCodeAt(index)) | 0;
+  }
+  return hash;
+}
+
+function showCandidateDetails(group, job) {
+  const lines = [
+    `Title: ${group.title}`,
+    `Host: ${group.host}`,
+    `Type: ${labelForFamily(group.type)}`,
+    `Qualities: ${group.qualities.join(", ")}`,
+    `Sources: ${group.sourceList.join(", ")}`,
+    `State: ${stateForGroup(group)}`,
+    "",
+    "URLs:",
+    ...group.items.map((item) => `- ${item.url}`)
+  ];
+
+  if (job) {
+    lines.push(
+      "",
+      "Job:",
+      `- Status: ${job.status || "unknown"}`,
+      `- Quality: ${job.quality || "unknown"}`,
+      `- Percent: ${job.percent ?? "unknown"}`,
+      `- Error: ${job.lastError || "none"}`
+    );
+  }
+
+  commandOutput.value = lines.join("\n");
+  commandPanel.hidden = false;
+}
+
+async function removeCandidate(group) {
+  const urls = group.items.map((item) => item.url);
+  await chrome.runtime.sendMessage({ type: "remove-media", urls });
+  selectedGroupQualities.delete(group.id);
+  await listMedia();
+}
+
+function renderMediaCard(group) {
+  const job = jobForGroup(group);
+  const state = stateForJob(job);
+  const li = document.createElement("li");
+  li.className = `item media-card ${state}`;
+
+  const thumb = renderThumbnail(group);
+
+  const content = document.createElement("div");
+  content.className = "media-content";
+
+  const title = document.createElement("div");
+  title.className = "media-title";
+  const titleText = document.createElement("strong");
+  titleText.textContent = group.title;
+  titleText.title = group.title;
+  const hostText = document.createElement("span");
+  hostText.textContent = group.host || describeUrl(group.sourceUrl).host;
+  title.append(titleText, hostText);
+
+  const meta = renderBadges(group, job);
+  const { row: qualityRow, select } = renderQualityPicker(group);
+  content.append(title, meta, qualityRow);
+
+  const actions = document.createElement("div");
+  actions.className = "actions";
+
+  const downloadButton = document.createElement("button");
+  downloadButton.type = "button";
+  downloadButton.textContent = state === "failed" ? "Retry" : "Download";
+  downloadButton.addEventListener("click", () => {
+    const option = selectedOptionForGroup(group, select);
+    runNativeDownload(option.item, option.quality);
+  });
+
+  const detailsButton = document.createElement("button");
+  detailsButton.type = "button";
+  detailsButton.className = "secondary";
+  detailsButton.textContent = "Details";
+  detailsButton.addEventListener("click", () => showCandidateDetails(group, job));
+
+  const removeButton = document.createElement("button");
+  removeButton.type = "button";
+  removeButton.className = "secondary";
+  removeButton.textContent = "Remove";
+  removeButton.addEventListener("click", () => removeCandidate(group));
+
+  actions.append(downloadButton, detailsButton, removeButton);
+  li.append(thumb, content, actions);
+  return li;
+}
+
+function renderMediaView() {
+  currentGroups = buildCandidateGroups(currentItems);
+  renderFilterChips(currentGroups);
+  itemsEl.innerHTML = "";
+
+  const visibleGroups = currentGroups.filter(filterMatches);
+  mediaSummaryEl.textContent = currentGroups.length
+    ? `${currentGroups.length} candidate${currentGroups.length === 1 ? "" : "s"} grouped from ${currentItems.length} source${currentItems.length === 1 ? "" : "s"}`
+    : "No candidates found";
+
+  if (currentGroups.length) updateMediaStatus(currentGroups);
+
+  if (!currentGroups.length) {
+    const empty = document.createElement("li");
+    empty.className = "empty-state";
+    empty.textContent = "Play the video for a few seconds, then refresh. Grant site access if detection is blocked.";
+    itemsEl.append(empty);
+    return;
+  }
+
+  if (!visibleGroups.length) {
+    const empty = document.createElement("li");
+    empty.className = "empty-state";
+    empty.textContent = `No ${activeFilter} media candidates in this tab.`;
+    itemsEl.append(empty);
+    return;
+  }
+
+  for (const group of visibleGroups) {
+    itemsEl.append(renderMediaCard(group));
+  }
+}
+
+function updateMediaStatus(groups) {
+  const counts = countGroupsByState(groups);
+  if (counts.active) {
+    setStatus(
+      `${counts.active} download${counts.active === 1 ? "" : "s"} running`,
+      "Monitor progress below or start another media card.",
+      "ready"
+    );
+    return;
+  }
+  if (counts.failed) {
+    setStatus(
+      `${counts.failed} download${counts.failed === 1 ? "" : "s"} need attention`,
+      "Open the failed card details or retry with another quality.",
+      "error"
+    );
+    return;
+  }
+  setStatus("Media detected", "Choose a media card quality, then download.", "ready");
 }
 
 async function saveSettings() {
@@ -175,25 +594,6 @@ async function runNativeDownload(item, qualityOverride) {
   }
 }
 
-function renderQualitySelect(items) {
-  qualitySelect.innerHTML = "";
-  currentQualityOptions = [];
-  const sorted = [...items].sort((a, b) => qualityRank(b) - qualityRank(a));
-  for (const item of sorted) {
-    const qualities = Array.isArray(item.qualities) && item.qualities.length
-      ? item.qualities
-      : [detectQuality(item)];
-    for (const quality of qualities) {
-      const optionIndex = currentQualityOptions.push({ item, quality }) - 1;
-      const option = document.createElement("option");
-      option.value = String(optionIndex);
-      option.textContent = `${quality} | ${defaultTitleForItem(item)}`;
-      qualitySelect.append(option);
-    }
-  }
-  runSelectedButton.disabled = currentQualityOptions.length === 0;
-}
-
 function renderJobs(jobs) {
   jobsEl.innerHTML = "";
   if (!jobs.length) {
@@ -217,13 +617,15 @@ function renderJobs(jobs) {
     const state = document.createElement("span");
     const detailText = job.percent != null
       ? `${job.percent}%`
-      : job.status === "failed"
-      ? "failed"
-      : job.totalFragments
-      ? `${job.currentFragment || 0}/${job.totalFragments}`
-      : job.currentFragment
-        ? `fragment ${job.currentFragment}`
-        : job.status || "running";
+      : job.phase
+        ? job.phase
+        : job.status === "failed"
+          ? "failed"
+          : job.totalFragments
+            ? `${job.currentFragment || 0}/${job.totalFragments}`
+            : job.currentFragment
+              ? `fragment ${job.currentFragment}`
+              : job.status || "running";
     state.textContent = detailText;
     head.append(title, state);
 
@@ -246,6 +648,12 @@ function renderJobs(jobs) {
     statusBadge.className = `badge ${job.status === "failed" ? "danger" : job.status === "finished" ? "success" : "neutral"}`;
     statusBadge.textContent = label;
     meta.append(statusBadge);
+    if (job.phase) {
+      const phaseBadge = document.createElement("span");
+      phaseBadge.className = "badge neutral";
+      phaseBadge.textContent = job.phase;
+      meta.append(phaseBadge);
+    }
     if (job.quality) {
       const qualityBadge = document.createElement("span");
       qualityBadge.className = "badge quality-badge";
@@ -284,7 +692,11 @@ function renderJobs(jobs) {
 
 async function refreshJobs() {
   const response = await chrome.runtime.sendMessage({ type: "native-status" });
-  if (response?.ok) renderJobs(response.jobs || []);
+  if (response?.ok) {
+    currentJobs = response.jobs || [];
+    renderJobs(currentJobs);
+    if (currentItems.length) renderMediaView();
+  }
 }
 
 function renderDeps(response) {
@@ -319,63 +731,7 @@ async function listMedia() {
   const response = await chrome.runtime.sendMessage({ type: "list-media" });
   const items = response.items || [];
   currentItems = items;
-  itemsEl.innerHTML = "";
-  renderQualitySelect(items);
-  mediaSummaryEl.textContent = items.length
-    ? `${items.length} candidate${items.length === 1 ? "" : "s"} found`
-    : "No candidates found";
-  if (items.length) {
-    setStatus("Media detected", "Choose a candidate or use quick download.", "ready");
-  }
-
-  for (const item of items) {
-    const li = document.createElement("li");
-    li.className = "item";
-
-    const details = document.createElement("div");
-    const url = document.createElement("div");
-    url.className = "url";
-
-    const info = describeUrl(item.url);
-    url.textContent = defaultTitleForItem(item);
-    url.title = item.url;
-
-    const meta = document.createElement("div");
-    meta.className = "meta media-tags";
-    const badge = document.createElement("span");
-    badge.className = "badge quality-badge";
-    badge.textContent = detectQuality(item);
-    const typeBadge = document.createElement("span");
-    typeBadge.className = "badge neutral";
-    typeBadge.textContent = labelForMediaType(item.type);
-    const source = document.createElement("span");
-    source.className = "badge source";
-    source.textContent = info.host;
-    meta.append(badge, typeBadge, source);
-
-    details.append(url, meta);
-
-    const actions = document.createElement("div");
-    actions.className = "actions";
-
-    const runYtDlp = document.createElement("button");
-    runYtDlp.type = "button";
-    runYtDlp.textContent = "Download";
-    runYtDlp.addEventListener("click", () => {
-      runNativeDownload(item, detectQuality(item));
-    });
-
-    actions.append(runYtDlp);
-    li.append(details, actions);
-    itemsEl.append(li);
-  }
-
-  if (!items.length) {
-    const empty = document.createElement("li");
-    empty.className = "empty-state";
-    empty.textContent = "Play the video for a few seconds, then refresh. Grant site access if detection is blocked.";
-    itemsEl.append(empty);
-  }
+  renderMediaView();
 
   const unresolvedPlaylists = items.some((item) => detectQuality(item) === "HLS");
   if (unresolvedPlaylists && !pendingMediaRefresh) {
@@ -422,6 +778,7 @@ refreshButton.addEventListener("click", async () => {
 
 clearButton.addEventListener("click", async () => {
   await chrome.runtime.sendMessage({ type: "clear-media" });
+  selectedGroupQualities.clear();
   await listMedia();
 });
 
@@ -448,6 +805,13 @@ testNativeButton.addEventListener("click", async () => {
   await checkDependencies();
 });
 
+mediaFiltersEl.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-filter]");
+  if (!button) return;
+  activeFilter = button.dataset.filter || "all";
+  renderMediaView();
+});
+
 async function testNativeHost() {
   const response = await chrome.runtime.sendMessage({ type: "native-ping" });
   setStatus(
@@ -456,11 +820,6 @@ async function testNativeHost() {
     response?.ok ? "ready" : "error"
   );
 }
-
-runSelectedButton.addEventListener("click", () => {
-  const selected = currentQualityOptions[Number(qualitySelect.value)];
-  if (selected?.item) runNativeDownload(selected.item, selected.quality);
-});
 
 settingsToggle.addEventListener("click", () => {
   settingsPanel.hidden = !settingsPanel.hidden;

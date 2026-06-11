@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>VDH Lite UI Harness</title>
+    <link rel="stylesheet" href="/extension/src/popup.css">
+    <style>
+      .harness-toolbar {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 8px;
+        padding: 10px;
+        border-bottom: 1px solid var(--line);
+        background: var(--surface);
+      }
+
+      .harness-toolbar label {
+        display: grid;
+        gap: 4px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .harness-toolbar select {
+        min-width: 0;
+        border: 1px solid var(--line-strong);
+        border-radius: 6px;
+        padding: 7px 8px;
+        font: inherit;
+        color: var(--text);
+        background: var(--surface);
+      }
+
+      .harness-note {
+        align-self: end;
+        color: var(--muted);
+        font-size: 12px;
+        white-space: nowrap;
+      }
+
+      #harness-mount:empty::before {
+        display: block;
+        padding: 16px;
+        color: var(--muted);
+        content: "Loading popup harness...";
+      }
+    </style>
+  </head>
+  <body>
+    <div class="harness-toolbar">
+      <label>
+        Scenario
+        <select id="scenario-select"></select>
+      </label>
+      <div class="harness-note">Mock Chrome APIs</div>
+    </div>
+    <div id="harness-mount"></div>
+    <script type="module">
+      import { SCENARIOS } from "./fixtures.js";
+      import { installChromeMock } from "./chrome_mock.js";
+
+      const params = new URLSearchParams(location.search);
+      const scenarioId = SCENARIOS[params.get("scenario")] ? params.get("scenario") : "detected";
+      const scenarioSelect = document.querySelector("#scenario-select");
+      for (const [id, scenario] of Object.entries(SCENARIOS)) {
+        const option = document.createElement("option");
+        option.value = id;
+        option.textContent = scenario.label;
+        option.selected = id === scenarioId;
+        scenarioSelect.append(option);
+      }
+      scenarioSelect.addEventListener("change", () => {
+        const next = new URL(location.href);
+        next.searchParams.set("scenario", scenarioSelect.value);
+        location.href = next.href;
+      });
+
+      const popupResponse = await fetch("/extension/src/popup.html");
+      const popupHtml = await popupResponse.text();
+      const popupDocument = new DOMParser().parseFromString(popupHtml, "text/html");
+      popupDocument.querySelectorAll("script").forEach((script) => script.remove());
+      popupDocument.querySelectorAll("img[src^='../icons/']").forEach((img) => {
+        img.src = img.getAttribute("src").replace("../icons/", "/extension/icons/");
+      });
+
+      const mount = document.querySelector("#harness-mount");
+      mount.replaceChildren(...popupDocument.body.children);
+
+      installChromeMock(SCENARIOS[scenarioId]);
+
+      const popupScript = document.createElement("script");
+      popupScript.src = "/extension/src/popup.js";
+      document.body.append(popupScript);
+    </script>
+  </body>
+</html>
