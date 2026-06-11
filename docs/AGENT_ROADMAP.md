@@ -1,6 +1,6 @@
 # Agent Development Roadmap
 
-This roadmap is the implementation guide for future agents. It is based on the current VDH Lite repository, `docs/PARABOLIC_KNOWHOW.md`, and `docs/VIDEO_DOWNLOADHELPER_KNOWHOW.md`.
+This roadmap is the implementation guide for future agents. It is based on the current VDH Lite repository, `docs/PARABOLIC_KNOWHOW.md`, `docs/VIDEO_DOWNLOADHELPER_KNOWHOW.md`, and a reference review of VidBee plus Open Video Downloader.
 
 Use this document as the main task sequence. `docs/ROADMAP.md` remains the high-level product backlog.
 
@@ -28,6 +28,13 @@ Known gaps:
 - no automated test suite
 - no diagnostics copy button
 - no DRM/unsupported detection UX
+
+Reference review updates:
+
+- VidBee reinforces a lightweight browser companion model: the extension should detect and hand off, while the local host owns yt-dlp discovery, download options, queue state, retries, and diagnostics.
+- VidBee's downloader-core and task-queue patterns support explicit schemas, resilient yt-dlp defaults, queue state projection, retry scheduling, and classified errors.
+- Open Video Downloader reinforces a media-card UI: thumbnail/title/host, item-local format selector, state-specific actions, progress phases, expandable diagnostics, and metadata/preferences views.
+- Do not port Electron, Tauri, React, Vue, Rust, WXT, or their package layout into VDH Lite. Extract the product and domain patterns into the current MV3 plus Python native-host architecture.
 
 ## Agent Working Rules
 
@@ -63,38 +70,45 @@ Target files:
 
 Implementation tasks:
 
-1. Add `--progress`, `--newline`, `--progress-template`, and `--progress-delta` to the `yt-dlp` command.
+1. Add `--progress`, `--newline`, `--no-color`, `--progress-template`, and `--progress-delta` to the `yt-dlp` command.
 2. Use a VDH Lite prefix:
 
 ```text
-[VDH-Lite] Progress;%(progress.status)s;%(progress.downloaded_bytes)s;%(progress.total_bytes)s;%(progress.total_bytes_estimate)s;%(progress.speed)s;%(progress.eta)s
+[VDH-Lite] Progress|%(progress.status|)s|%(progress.percent|)s|%(progress._percent_str|)s|%(progress.speed|)s|%(progress.eta|)s|%(progress.downloaded_bytes|)s|%(progress.total_bytes|)s|%(progress.total_bytes_estimate|)s|%(progress.fragment_index|)s|%(progress.fragment_count|)s
 ```
 
-3. Add `--print after_move:filepath`.
+3. Add `--print after_move:filepath` and, when possible, `--print after_move:format_id`.
 4. Parse structured progress lines into:
 
 ```json
 {
   "phase": "downloading",
+  "status": "downloading",
   "downloadedBytes": 123,
   "totalBytes": 456,
+  "totalBytesEstimate": 456,
   "percent": 27.0,
   "speedBytes": 1000000,
   "etaSeconds": 12,
+  "currentFragment": 1,
+  "totalFragments": 10,
+  "formatId": null,
   "finalPath": null
 }
 ```
 
-5. Keep current regex parsing as fallback for legacy output and fragment hints.
-6. Store final output path in the job record after successful completion.
-7. Surface final path and clear failure reason in popup job rows.
-8. Ensure `clear-jobs` does not delete active/running jobs.
+5. Add phase detection for `initializing`, `downloading`, `merging`, `remuxing`, `reencoding`, and `finalizing`.
+6. Keep current regex parsing as fallback for legacy output, destination lines, and fragment hints.
+7. Store final output path and final format id in the job record after successful completion.
+8. Surface phase, final path, and clear failure reason in popup job rows.
+9. Ensure `clear-jobs` does not delete active/running jobs.
 
 Acceptance criteria:
 
 - Popup progress no longer depends only on `[download] 12.3%` regex lines.
-- Completed jobs show `percent: 100` and `finalPath` when available.
+- Completed jobs show `percent: 100`, `phase: finished`, and `finalPath` when available.
 - Failed jobs show the final useful error line.
+- Running jobs show a useful phase even while percent is indeterminate.
 - Existing quality download path still works.
 - Job JSON remains bounded.
 
@@ -160,22 +174,36 @@ yt-dlp --ignore-config --dump-single-json --skip-download --ignore-errors --no-w
       "title": "...",
       "url": "...",
       "playlistPosition": -1,
-      "formats": [],
-      "subtitles": []
+      "formats": [
+        {
+          "id": "...",
+          "height": 1080,
+          "fps": 30,
+          "abr": null,
+          "ext": "mp4",
+          "vcodec": "avc1",
+          "acodec": "mp4a",
+          "filesize": null
+        }
+      ],
+      "subtitles": [],
+      "thumbnail": "..."
     }
   ]
 }
 ```
 
 6. Keep large JSON out of popup state; return only needed fields.
-7. Add popup action or automatic "details loading" path for selected candidate.
-8. Show discovery failures as actionable messages, not raw stack traces.
+7. Normalize formats into `video`, `audio`, and `best` style choices so the popup can render an item-local selector.
+8. Add popup action or automatic "details loading" path for selected candidate.
+9. Show discovery failures as actionable messages, not raw stack traces.
 
 Acceptance criteria:
 
 - Native host supports `discover`.
 - Popup can show discovered title and at least one format/quality from `yt-dlp`.
 - Failed discovery does not block direct download fallback.
+- Discovery can include thumbnail, duration, uploader/host, and a compact format list when available.
 - Private data is not logged beyond existing diagnostic logs.
 
 Validation:
@@ -223,7 +251,11 @@ Implementation tasks:
     "audioOnly": false,
     "subtitles": [],
     "embedMetadata": true,
-    "embedThumbnail": false
+    "embedThumbnail": false,
+    "container": "auto",
+    "proxy": null,
+    "cookiesFromBrowser": null,
+    "cookiesPath": null
   }
 }
 ```
@@ -250,13 +282,24 @@ Implementation tasks:
 - avoid Windows max path issues
 - decide collision strategy
 
-6. Add partial download awareness before force-overwrite behavior.
+6. Add resilient yt-dlp defaults inspired by VidBee:
+
+- `--continue`
+- `--retries 30`
+- `--fragment-retries 30`
+- `--retry-sleep 2`
+- `--socket-timeout 30`
+- `--windows-filenames` and bounded filename length on Windows
+
+7. Add optional cookies, proxy, and config path support behind advanced settings.
+8. Add partial download awareness before force-overwrite behavior.
 
 Acceptance criteria:
 
 - Native host validates the options object.
 - Bad option values are rejected with clear errors.
 - MP4 and audio extraction modes work for supported media.
+- Cookie/proxy/config settings are optional and redacted from logs/diagnostics.
 - Existing height-based download still works.
 
 Validation:
@@ -269,7 +312,7 @@ python -m py_compile native\yt_dlp_host.py
 
 Goal: make the popup feel like a downloader product rather than a raw URL list.
 
-Why now: Video DownloadHelper's core UX is a compact candidate list. VDH Lite already detects candidates, but the current UI still asks users to reason about raw URLs.
+Why now: Video DownloadHelper's core UX is a compact candidate list, and Open Video Downloader shows how much clearer a media-card flow is than a raw URL list. VDH Lite already detects candidates, but the current UI still asks users to reason about raw URLs.
 
 Target files:
 
@@ -291,6 +334,8 @@ Implementation tasks:
   "title": "...",
   "type": "hls|dash|video|audio|unknown",
   "qualities": [],
+  "formats": [],
+  "thumbnail": null,
   "score": 100,
   "detectedAt": 0,
   "sources": ["webRequest", "dom"]
@@ -302,8 +347,17 @@ Implementation tasks:
 4. Add relative URL resolution for HLS playlists.
 5. Keep preview/sample media hidden by default.
 6. Add optional setting to show filtered candidates.
-7. Replace the global quality dropdown with per-item quality chips or an item-local selector.
-8. Add extension badge states:
+7. Replace the global quality dropdown with a media-card item-local selector.
+8. Use media cards with:
+
+- title and host as the first scan targets
+- optional thumbnail or stable placeholder
+- type/quality chips
+- one primary Download action
+- secondary actions for details, clear/remove, and retry when applicable
+
+9. Add filter chips when useful: `All`, `Detected`, `Active`, `Finished`, `Failed`.
+10. Add extension badge states:
 
 - detected media count
 - running downloads
@@ -314,6 +368,7 @@ Acceptance criteria:
 - Duplicate URLs do not spam the popup.
 - Per-item quality selection works.
 - The popup can be scanned by title, host, and quality.
+- The first visible screen prioritizes detected candidates over settings and raw job internals.
 - Detection still works after popup close/reopen while tab remains open.
 
 Validation:
@@ -362,8 +417,9 @@ unknown
 3. Persist original download request per job for retry.
 4. Add a concurrency limit setting.
 5. Keep queued jobs in native job state.
-6. Recover queued/running jobs on native restart as retryable, not silently lost.
-7. Update popup sections:
+6. Add an error category field to jobs so retry controls can distinguish retryable and non-retryable failures.
+7. Recover queued/running jobs on native restart as retryable, not silently lost.
+8. Update popup sections:
 
 - Active
 - Queued
@@ -375,6 +431,7 @@ Acceptance criteria:
 - Users can cancel a running job.
 - Failed jobs can be retried.
 - Clearing history preserves active and queued jobs.
+- Retry controls are shown only when a job category is plausibly retryable.
 - Native host restart does not erase recoverable job intent.
 
 Validation:
@@ -420,19 +477,36 @@ Implementation tasks:
 { "type": "diagnostics" }
 ```
 
-5. Add clearer native missing/install messages:
+5. Add a native error classifier for:
+
+- `http-429`
+- `auth-required`
+- `geo-blocked`
+- `not-found`
+- `disk-full`
+- `permission-denied`
+- `binary-missing`
+- `ffmpeg`
+- `network-transient`
+- `stalled`
+- `cancelled-by-user`
+- `unknown`
+
+6. Map categories to UI actions such as import cookies, choose folder, retry, free disk, set proxy, report issue, or remove task.
+7. Add clearer native missing/install messages:
 
 - native host not installed
 - native host installed but `yt-dlp` missing
 - FFmpeg missing
 - browser restart may be required
 
-6. Update support docs with diagnostics workflow.
+8. Update support docs with diagnostics workflow.
 
 Acceptance criteria:
 
 - A failed download row can produce useful issue-template content.
 - Diagnostics do not include cookies or tokens.
+- Common failures show a short explanation and at least one sensible next action.
 - Missing native host flow is understandable to a non-developer.
 
 Validation:
@@ -544,6 +618,7 @@ Implementation tasks:
 - native message validation
 - job state transitions
 - format selector construction
+- error classification
 
 2. Add JavaScript tests for:
 
@@ -551,6 +626,7 @@ Implementation tasks:
 - quality detection
 - candidate scoring/grouping
 - HLS/MPD parser fixtures
+- popup candidate projection from grouped media
 
 3. Add fixture files:
 
@@ -558,6 +634,7 @@ Implementation tasks:
 tests/fixtures/yt-dlp-progress.txt
 tests/fixtures/master.m3u8
 tests/fixtures/basic.mpd
+tests/fixtures/yt-dlp-errors.txt
 ```
 
 4. Add a single validation script:
@@ -623,8 +700,8 @@ User priority update: UI/UX should lead the next development passes. Keep native
 Work in this order unless the user explicitly reprioritizes:
 
 1. Stage 4: Candidate grouping and per-item quality UX.
-2. Stage 6: Diagnostics and community support UX.
-3. Stage 1: Native progress and final path hardening.
+2. Stage 1: Native progress and final path hardening.
+3. Stage 6: Diagnostics and community support UX.
 4. Stage 2: Native discovery preflight.
 5. Stage 3: Structured download options and format selection.
 6. Stage 5: Queue, cancel, retry, and recovery.
@@ -633,7 +710,7 @@ Work in this order unless the user explicitly reprioritizes:
 9. Stage 7: Advanced `yt-dlp` features.
 10. Stage 10: Public release readiness.
 
-Reasoning: users should immediately understand whether VDH Lite is ready, what it detected, what will be downloaded, and what to do when nothing appears. Once the popup is clear, native progress and discovery can deepen the same UI instead of forcing another redesign.
+Reasoning: users should immediately understand whether VDH Lite is ready, what it detected, what will be downloaded, and what to do when nothing appears. Once the popup has a stable media-card model, structured progress and diagnostics can deepen the same UI before discovery and richer download options arrive.
 
 ## First Agent Task Template
 
@@ -641,6 +718,7 @@ Use this prompt for the next implementation agent:
 
 ```text
 Read docs/AGENT_ROADMAP.md, docs/VIDEO_DOWNLOADHELPER_KNOWHOW.md, and docs/ARCHITECTURE.md.
+Use the VidBee and Open Video Downloader reference patterns summarized in docs/ROADMAP.md and docs/AGENT_ROADMAP.md.
 Implement Stage 4 only: candidate grouping and per-item quality UX.
 Keep changes scoped to the listed target files.
 Preserve existing native download behavior.
