@@ -65,7 +65,7 @@ Recent reference review added these product and engineering patterns:
 - [ ] Audio extraction mode: add MP3/M4A download mode using yt-dlp postprocessors.
 - [ ] Filename templates: configurable template with safe defaults.
 - [ ] Network options: optional proxy/config path/extractor args behind advanced settings.
-- [ ] Resilient defaults: use retries, fragment retries, retry sleep, socket timeout, `--continue`, and safe Windows filename options.
+- [x] Resilient defaults: use retries, fragment retries, retry sleep, socket timeout, `--continue`, merge-output fallback, and safe Windows filename options.
 - [ ] Destination rules: per-site or per-profile download folders.
 - [ ] Cancel/retry controls: stop a running yt-dlp job and retry failed downloads.
 

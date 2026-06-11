@@ -34,6 +34,22 @@ PROGRESS_TEMPLATE = (
     "%(progress.fragment_index|)s|"
     "%(progress.fragment_count|)s"
 )
+STABLE_YTDLP_ARGS = [
+    "--continue",
+    "--retries",
+    "30",
+    "--fragment-retries",
+    "30",
+    "--retry-sleep",
+    "2",
+    "--socket-timeout",
+    "30",
+    "--merge-output-format",
+    "mp4/mkv",
+    "--windows-filenames",
+    "--trim-filenames",
+    "180",
+]
 ERROR_GUIDANCE = {
     "http-429": {
         "label": "Rate limited",
@@ -237,6 +253,10 @@ def ytdlp_format_selector(message):
         return format_id
 
     return ytdlp_format_for_quality(message.get("quality"))
+
+
+def stable_ytdlp_args():
+    return list(STABLE_YTDLP_ARGS)
 
 
 def command_version(command):
@@ -1149,6 +1169,7 @@ def start_download(message):
         "--progress",
         "--newline",
         "--no-color",
+        *stable_ytdlp_args(),
         "--progress-delta",
         "1",
         "--progress-template",
