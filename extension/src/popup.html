@@ -12,64 +12,76 @@
         <img src="../icons/icon32.png" alt="" width="24" height="24">
         <div>
           <strong>VDH Lite</strong>
-          <span id="page-host">Current tab</span>
+          <span id="page-host" data-i18n="brand.currentTab">Current tab</span>
         </div>
       </div>
       <div class="header-actions">
-        <button id="grant" class="secondary" type="button">Grant site</button>
-        <button id="settings-toggle" class="icon-button" type="button" title="Settings" aria-label="Settings">&#9881;</button>
+        <button id="grant" class="secondary" type="button" data-i18n="button.grantSite">Grant site</button>
+        <button id="settings-toggle" class="icon-button" type="button" title="Settings" aria-label="Settings" data-i18n-title="settings.title" data-i18n-aria-label="settings.title">&#9881;</button>
       </div>
     </header>
     <main>
       <section id="status-card" class="status-card">
         <div>
-          <div id="status" class="status-title">Loading...</div>
-          <div id="status-detail" class="status-detail">Checking native host and scanning the active tab.</div>
+          <div id="status" class="status-title" data-i18n="status.loading">Loading...</div>
+          <div id="status-detail" class="status-detail" data-i18n="status.loading.detail">Checking native host and scanning the active tab.</div>
         </div>
       </section>
       <section id="settings-panel" class="settings" hidden>
-        <div class="section-heading">Settings</div>
-        <label for="download-dir">Save folder</label>
+        <div class="section-heading" data-i18n="settings.title">Settings</div>
+        <label for="language-select" data-i18n="settings.language">Language</label>
+        <select id="language-select">
+          <option value="en">English</option>
+          <option value="zh-Hant">繁體中文</option>
+        </select>
+        <label for="download-dir" data-i18n="settings.saveFolder">Save folder</label>
         <div class="input-row">
           <input id="download-dir" type="text" placeholder="%USERPROFILE%\\Downloads\\VDH Lite">
-          <button id="browse-dir" class="secondary" type="button">Browse</button>
-          <button id="reset-dir" class="secondary" type="button">Reset</button>
+          <button id="browse-dir" class="secondary" type="button" data-i18n="button.browse">Browse</button>
+          <button id="reset-dir" class="secondary" type="button" data-i18n="button.reset">Reset</button>
         </div>
-        <label for="concurrency-limit">Concurrent downloads</label>
+        <label for="concurrency-limit" data-i18n="settings.concurrentDownloads">Concurrent downloads</label>
         <input id="concurrency-limit" type="number" min="1" max="4" step="1" value="2">
+        <label for="download-speed-profile" data-i18n="settings.downloadSpeed">Download speed</label>
+        <select id="download-speed-profile">
+          <option value="polite" data-i18n="speed.polite">Polite - 2 fragments</option>
+          <option value="balanced" data-i18n="speed.balanced">Balanced - 4 fragments</option>
+          <option value="fast" data-i18n="speed.fast">Fast - 8 fragments</option>
+          <option value="burst" data-i18n="speed.burst">Burst - 12 fragments</option>
+        </select>
         <div class="settings-actions">
-          <button id="test-native" type="button">Test native host</button>
-          <button id="install-deps" class="secondary" type="button">Install missing</button>
-          <button id="copy-diagnostics" class="secondary" type="button">Copy diagnostics</button>
+          <button id="test-native" type="button" data-i18n="button.testNative">Test native host</button>
+          <button id="install-deps" class="secondary" type="button" data-i18n="button.installMissing">Install missing</button>
+          <button id="copy-diagnostics" class="secondary" type="button" data-i18n="button.copyDiagnostics">Copy diagnostics</button>
         </div>
-        <div id="deps-status" class="deps-status">Checking dependencies...</div>
+        <div id="deps-status" class="deps-status" data-i18n="deps.checking">Checking dependencies...</div>
       </section>
       <section id="media-panel" class="media-panel">
         <div class="panel-header media-header">
           <div>
-            <div class="section-heading">Detected media</div>
-            <div id="media-summary" class="section-subtitle">Scanning current tab...</div>
+            <div class="section-heading" data-i18n="media.title">Detected media</div>
+            <div id="media-summary" class="section-subtitle" data-i18n="media.scanning">Scanning current tab...</div>
           </div>
           <div class="media-actions">
-            <button id="refresh" class="secondary" type="button">Refresh</button>
-            <button id="clear" class="secondary" type="button">Clear</button>
+            <button id="refresh" class="secondary" type="button" data-i18n="button.refresh">Refresh</button>
+            <button id="clear" class="secondary" type="button" data-i18n="button.clear">Clear</button>
           </div>
         </div>
-        <div id="media-filters" class="filter-chips" role="group" aria-label="Media filters"></div>
+        <div id="media-filters" class="filter-chips" role="group" aria-label="Media filters" data-i18n-aria-label="media.filters"></div>
         <ul id="items"></ul>
       </section>
       <section id="jobs-panel" class="jobs-panel">
         <div class="panel-header">
           <div>
-            <div class="section-heading">Downloads</div>
-            <div class="section-subtitle">Recent native host jobs</div>
+            <div class="section-heading" data-i18n="jobs.title">Downloads</div>
+            <div class="section-subtitle" data-i18n="jobs.subtitle">Recent native host jobs</div>
           </div>
-          <button id="clear-jobs" class="secondary" type="button">Clear finished</button>
+          <button id="clear-jobs" class="secondary" type="button" data-i18n="button.clearFinished">Clear finished</button>
         </div>
         <div id="jobs"></div>
       </section>
       <section id="command-panel" hidden>
-        <label for="command-output">Download details</label>
+        <label for="command-output" data-i18n="details.downloadDetails">Download details</label>
         <textarea id="command-output" readonly rows="4"></textarea>
       </section>
     </main>

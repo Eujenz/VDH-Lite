@@ -23,6 +23,14 @@ try {
   assert.equal(await page.locator(".media-quality-select").count(), 3);
   assert.match(await page.locator("#media-summary").innerText(), /3 candidates grouped from 4 sources/);
 
+  await page.locator("#settings-toggle").click();
+  await page.locator("#language-select").selectOption("zh-Hant");
+  assert.equal(await page.locator("#settings-panel .section-heading").innerText(), "設定");
+  assert.equal(await page.locator("#refresh").innerText(), "重新整理");
+  assert.match(await page.locator("#media-summary").innerText(), /3 個候選項目，來自 4 個來源/);
+  await page.locator("#language-select").selectOption("en");
+  assert.equal(await page.locator("#refresh").innerText(), "Refresh");
+
   await page.locator(".media-card").first().locator("button", { hasText: "Details" }).click();
   assert.equal(await page.locator("#command-panel").isVisible(), true);
   assert.match(await page.locator("#command-output").inputValue(), /URLs:/);

@@ -199,6 +199,7 @@ export function installChromeMock(scenario) {
     items: clone(scenario.items),
     jobs: clone(scenario.jobs),
     settings: {
+      uiLanguage: "en",
       downloadDir: "%USERPROFILE%\\Downloads\\VDH Lite",
       concurrencyLimit: 2
     },

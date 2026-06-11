@@ -38,8 +38,6 @@ STABLE_YTDLP_ARGS = [
     "--continue",
     "--retries",
     "30",
-    "--fragment-retries",
-    "30",
     "--retry-sleep",
     "2",
     "--socket-timeout",
@@ -260,8 +258,11 @@ def ytdlp_format_selector(message):
     return ytdlp_format_for_quality(message.get("quality"))
 
 
-def stable_ytdlp_args():
-    return list(STABLE_YTDLP_ARGS)
+def stable_ytdlp_args(fragment_retries=None):
+    args = list(STABLE_YTDLP_ARGS)
+    if fragment_retries:
+        args.extend(["--fragment-retries", str(fragment_retries)])
+    return args
 
 
 def command_version(command):
@@ -1156,6 +1157,7 @@ def retryable_download_request(message):
         "formatLabel",
         "downloadDir",
         "concurrencyLimit",
+        "downloadSpeedProfile",
     ]
     request = {key: message.get(key) for key in allowed if key in message}
     return json.loads(json.dumps(request, ensure_ascii=False))
@@ -1171,6 +1173,7 @@ def build_download_command(message):
     referer = message.get("referer") or message.get("originUrl")
     user_agent = message.get("userAgent")
     headers = forwarded_headers(message)
+    speed_key, speed_label, concurrent_fragments, fragment_retries = download_speed_profile(message.get("downloadSpeedProfile"))
     output_template = f"{title} - %(id)s.%(ext)s"
 
     command = [
@@ -1178,7 +1181,9 @@ def build_download_command(message):
         "--progress",
         "--newline",
         "--no-color",
-        *stable_ytdlp_args(),
+        *stable_ytdlp_args(fragment_retries),
+        "--concurrent-fragments",
+        str(concurrent_fragments),
         "--progress-delta",
         "1",
         "--progress-template",
@@ -1214,6 +1219,10 @@ def build_download_command(message):
         "quality": sanitize_component(message.get("quality"), ""),
         "formatLabel": sanitize_component(message.get("formatLabel"), ""),
         "formatSelector": format_selector,
+        "speedProfile": speed_key,
+        "speedProfileLabel": speed_label,
+        "concurrentFragments": concurrent_fragments,
+        "fragmentRetries": fragment_retries,
         "url": url,
     }
 
@@ -1236,6 +1245,10 @@ def new_download_job(message, retry_of=None):
         "quality": prepared["quality"],
         "formatLabel": prepared["formatLabel"],
         "formatSelector": prepared["formatSelector"],
+        "speedProfile": prepared["speedProfile"],
+        "speedProfileLabel": prepared["speedProfileLabel"],
+        "concurrentFragments": prepared["concurrentFragments"],
+        "fragmentRetries": prepared["fragmentRetries"],
         "url": prepared["url"],
         "downloadDir": prepared["downloadDir"],
         "finalPath": None,
@@ -1291,6 +1304,10 @@ def launch_job(job):
         "quality": prepared["quality"],
         "formatLabel": prepared["formatLabel"],
         "formatSelector": prepared["formatSelector"],
+        "speedProfile": prepared["speedProfile"],
+        "speedProfileLabel": prepared["speedProfileLabel"],
+        "concurrentFragments": prepared["concurrentFragments"],
+        "fragmentRetries": prepared["fragmentRetries"],
         "url": prepared["url"],
         "downloadDir": prepared["downloadDir"],
         "progressPath": str(progress_path),
@@ -1516,6 +1533,17 @@ def loggable_command(command):
         if part == "--add-header":
             redact_next = True
     return " ".join(redacted)
+
+
+def download_speed_profile(value):
+    key = str(value or "balanced").strip().lower()
+    profiles = {
+        "polite": ("polite", "Polite", 2, 15),
+        "balanced": ("balanced", "Balanced", 4, 15),
+        "fast": ("fast", "Fast", 8, 10),
+        "burst": ("burst", "Burst", 12, 8),
+    }
+    return profiles.get(key, profiles["balanced"])
 
 
 def start_download(message):

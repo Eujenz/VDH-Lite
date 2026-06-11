@@ -5,6 +5,7 @@ Thumbs.db
 .idea/
 
 # Build/package output
+node_modules/
 dist/
 *.zip
 *.crx
