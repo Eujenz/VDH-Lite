@@ -11,6 +11,7 @@ const grantButton = document.querySelector("#grant");
 const commandPanel = document.querySelector("#command-panel");
 const commandOutput = document.querySelector("#command-output");
 const downloadDirInput = document.querySelector("#download-dir");
+const concurrencyLimitInput = document.querySelector("#concurrency-limit");
 const browseDirButton = document.querySelector("#browse-dir");
 const resetDirButton = document.querySelector("#reset-dir");
 const testNativeButton = document.querySelector("#test-native");
@@ -406,8 +407,8 @@ function buildCandidateGroups(items) {
 
 function stateForJob(job) {
   if (!job) return "detected";
-  if (job.running || job.status === "running" || job.status === "queued") return "active";
-  if (job.status === "failed") return "failed";
+  if (job.running || job.status === "running" || job.status === "queued" || job.status === "stopping") return "active";
+  if (job.status === "failed" || job.status === "stopped" || job.status === "unknown") return "failed";
   if (job.status === "finished") return "finished";
   return "detected";
 }
@@ -804,9 +805,17 @@ function updateMediaStatus(groups) {
   setStatus("Media detected", "Choose a media card quality, then download.", "ready");
 }
 
+function concurrencyLimitValue() {
+  const value = Number.parseInt(concurrencyLimitInput.value, 10);
+  if (!Number.isFinite(value)) return 2;
+  return Math.max(1, Math.min(4, value));
+}
+
 async function saveSettings() {
+  concurrencyLimitInput.value = String(concurrencyLimitValue());
   await chrome.storage.local.set({
-    downloadDir: downloadDirInput.value.trim() || DEFAULT_DOWNLOAD_DIR
+    downloadDir: downloadDirInput.value.trim() || DEFAULT_DOWNLOAD_DIR,
+    concurrencyLimit: concurrencyLimitValue()
   });
 }
 
@@ -840,9 +849,11 @@ async function browseDownloadDir() {
 
 async function loadSettings() {
   const settings = await chrome.storage.local.get({
-    downloadDir: DEFAULT_DOWNLOAD_DIR
+    downloadDir: DEFAULT_DOWNLOAD_DIR,
+    concurrencyLimit: 2
   });
   downloadDirInput.value = settings.downloadDir;
+  concurrencyLimitInput.value = String(Math.max(1, Math.min(4, Number.parseInt(settings.concurrencyLimit, 10) || 2)));
 }
 
 async function getActiveTabInfo() {
@@ -896,14 +907,75 @@ async function runNativeDownload(item, qualityOverride) {
     formatId: downloadChoice.formatId,
     formatSelector: downloadChoice.formatSelector,
     formatLabel: downloadChoice.formatLabel,
-    downloadDir: downloadDirInput.value.trim() || DEFAULT_DOWNLOAD_DIR
+    downloadDir: downloadDirInput.value.trim() || DEFAULT_DOWNLOAD_DIR,
+    concurrencyLimit: concurrencyLimitValue()
   });
 
   if (response?.ok) {
-    setStatus("Download started", `Native job ${response.jobId || response.pid} is running.`, "ready");
+    setStatus(
+      response.queued ? "Download queued" : "Download started",
+      response.queued
+        ? `Native job ${response.jobId} will start when a slot is free.`
+        : `Native job ${response.jobId || response.pid} is running.`,
+      "ready"
+    );
     await refreshJobs();
   } else {
     setStatus("Download failed to start", response?.error || "Unknown native host error.", "error");
+  }
+}
+
+function canCancelJob(job) {
+  return job?.status === "queued" || job?.status === "running" || job?.status === "stopping" || job?.running;
+}
+
+function canRetryJob(job) {
+  return Boolean(job?.retryable) && ["failed", "stopped", "unknown"].includes(job.status);
+}
+
+function jobStatusLabel(job) {
+  if (job.status === "queued") return "Queued";
+  if (job.status === "stopping") return "Stopping";
+  if (job.status === "stopped") return "Stopped";
+  if (job.running) return "Running";
+  if (job.status === "failed") return "Failed";
+  if (job.status === "finished") return "Finished";
+  return "Unknown";
+}
+
+async function cancelNativeJob(job) {
+  if (!job?.id) return;
+  setStatus("Cancelling download", job.title || job.id, "warning");
+  const response = await chrome.runtime.sendMessage({
+    type: "native-cancel-job",
+    jobId: job.id,
+    concurrencyLimit: concurrencyLimitValue()
+  });
+  if (response?.ok) {
+    setStatus("Download cancelled", response.status || job.id, "ready");
+    await refreshJobs();
+  } else {
+    setStatus("Cancel failed", response?.error || "Native host could not cancel this job.", "error");
+  }
+}
+
+async function retryNativeJob(job) {
+  if (!job?.id) return;
+  setStatus("Retrying download", job.title || job.id, "warning");
+  const response = await chrome.runtime.sendMessage({
+    type: "native-retry-job",
+    jobId: job.id,
+    concurrencyLimit: concurrencyLimitValue()
+  });
+  if (response?.ok) {
+    setStatus(
+      response.status === "queued" ? "Retry queued" : "Retry started",
+      `Native job ${response.jobId} is ${response.status || "ready"}.`,
+      "ready"
+    );
+    await refreshJobs();
+  } else {
+    setStatus("Retry failed", response?.error || "Native host could not retry this job.", "error");
   }
 }
 
@@ -922,6 +994,8 @@ function renderJobs(jobs) {
     row.className = "job";
     if (job.status === "failed") row.classList.add("failed");
     if (job.status === "finished") row.classList.add("finished");
+    if (job.status === "queued") row.classList.add("queued");
+    if (job.status === "stopped") row.classList.add("stopped");
 
     const head = document.createElement("div");
     head.className = "job-head";
@@ -950,13 +1024,7 @@ function renderJobs(jobs) {
 
     const meta = document.createElement("div");
     meta.className = "meta job-tags";
-    const label = job.running
-      ? "Running"
-      : job.status === "failed"
-        ? "Failed"
-      : job.status === "finished"
-          ? "Finished"
-          : "Unknown";
+    const label = jobStatusLabel(job);
     const statusBadge = document.createElement("span");
     statusBadge.className = `badge ${job.status === "failed" ? "danger" : job.status === "finished" ? "success" : "neutral"}`;
     statusBadge.textContent = label;
@@ -1019,6 +1087,22 @@ function renderJobs(jobs) {
       diagnosticsButton.textContent = "Copy diagnostics";
       diagnosticsButton.addEventListener("click", () => copyDiagnostics(job));
       meta.append(diagnosticsButton);
+    }
+    if (canCancelJob(job)) {
+      const cancelButton = document.createElement("button");
+      cancelButton.type = "button";
+      cancelButton.className = "secondary inline-action";
+      cancelButton.textContent = "Cancel";
+      cancelButton.addEventListener("click", () => cancelNativeJob(job));
+      meta.append(cancelButton);
+    }
+    if (canRetryJob(job)) {
+      const retryButton = document.createElement("button");
+      retryButton.type = "button";
+      retryButton.className = "secondary inline-action";
+      retryButton.textContent = "Retry";
+      retryButton.addEventListener("click", () => retryNativeJob(job));
+      meta.append(retryButton);
     }
 
     row.append(head, progress, meta);
@@ -1119,7 +1203,7 @@ clearButton.addEventListener("click", async () => {
 });
 
 clearJobsButton.addEventListener("click", async () => {
-  await chrome.runtime.sendMessage({ type: "native-clear-jobs" });
+  await chrome.runtime.sendMessage({ type: "native-clear-completed" });
   await refreshJobs();
 });
 
@@ -1129,6 +1213,7 @@ grantButton.addEventListener("click", async () => {
 });
 
 downloadDirInput.addEventListener("change", saveSettings);
+concurrencyLimitInput.addEventListener("change", saveSettings);
 browseDirButton.addEventListener("click", browseDownloadDir);
 
 resetDirButton.addEventListener("click", async () => {

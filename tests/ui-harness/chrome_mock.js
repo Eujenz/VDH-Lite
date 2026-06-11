@@ -2,13 +2,13 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-function createDownloadJob(message) {
+function createDownloadJob(message, queued = false) {
   const now = new Date().toISOString().slice(0, 19);
   return {
     id: `harness-${Date.now()}`,
-    pid: Math.floor(1000 + Math.random() * 8000),
-    status: "running",
-    running: true,
+    pid: queued ? null : Math.floor(1000 + Math.random() * 8000),
+    status: queued ? "queued" : "running",
+    running: !queued,
     title: message.title || message.host || "Harness download",
     host: message.host || "example.test",
     quality: message.quality || "Best",
@@ -16,8 +16,22 @@ function createDownloadJob(message) {
     formatSelector: message.formatSelector || "",
     url: message.url,
     percent: 0,
-    phase: "queued",
-    startedAt: now
+    phase: queued ? "queued" : "initializing",
+    retryable: true,
+    request: { ...message },
+    queuedAt: now,
+    startedAt: queued ? null : now
+  };
+}
+
+function downloadMessageFromJob(job) {
+  if (job.request) return { ...job.request };
+  return {
+    url: job.url,
+    title: job.title,
+    host: job.host,
+    quality: job.quality,
+    downloadDir: "%USERPROFILE%\\Downloads\\VDH Lite"
   };
 }
 
@@ -185,7 +199,8 @@ export function installChromeMock(scenario) {
     items: clone(scenario.items),
     jobs: clone(scenario.jobs),
     settings: {
-      downloadDir: "%USERPROFILE%\\Downloads\\VDH Lite"
+      downloadDir: "%USERPROFILE%\\Downloads\\VDH Lite",
+      concurrencyLimit: 2
     },
     messages: [],
     clipboardText: "",
@@ -288,18 +303,43 @@ export function installChromeMock(scenario) {
             return discoveryForMessage(state, message);
           case "native-diagnostics":
             return diagnosticsForState(state, message.jobId || null);
+          case "native-cancel-job": {
+            const job = state.jobs.find((candidate) => candidate.id === message.jobId);
+            if (!job) return { ok: false, error: "Job not found." };
+            job.status = "stopped";
+            job.running = false;
+            job.phase = "stopped";
+            job.retryable = true;
+            job.lastError = "Cancelled by user.";
+            return { ok: true, jobId: job.id, status: job.status };
+          }
+          case "native-retry-job": {
+            const job = state.jobs.find((candidate) => candidate.id === message.jobId);
+            if (!job) return { ok: false, error: "Job not found." };
+            const running = state.jobs.filter((candidate) => candidate.running || candidate.status === "running").length;
+            const limit = Math.max(1, Math.min(4, Number(message.concurrencyLimit || state.settings.concurrencyLimit || 2)));
+            const retry = createDownloadJob(downloadMessageFromJob(job), running >= limit);
+            retry.retryOf = job.id;
+            state.jobs.unshift(retry);
+            return { ok: true, jobId: retry.id, status: retry.status, pid: retry.pid };
+          }
           case "native-clear-jobs":
-            state.jobs = state.jobs.filter((job) => job.running || job.status === "running");
+          case "native-clear-completed":
+            state.jobs = state.jobs.filter((job) => job.running || job.status === "running" || job.status === "queued");
             return { ok: true };
           case "native-pick-folder":
             return { ok: true, cancelled: true };
           case "native-download": {
-            const job = createDownloadJob(message);
+            const running = state.jobs.filter((candidate) => candidate.running || candidate.status === "running").length;
+            const limit = Math.max(1, Math.min(4, Number(message.concurrencyLimit || state.settings.concurrencyLimit || 2)));
+            const job = createDownloadJob(message, running >= limit);
             state.jobs.unshift(job);
             return {
               ok: true,
               jobId: job.id,
-              pid: job.pid
+              pid: job.pid,
+              status: job.status,
+              queued: job.status === "queued"
             };
           }
           default:

@@ -33,7 +33,7 @@ Recent reference review added these product and engineering patterns:
 - [ ] Download status: show phase first, then overall progress, speed, ETA, quality, and final output path.
 - [ ] Structured progress: parse a prefixed `yt-dlp --progress-template` line before falling back to human-readable regexes.
 - [ ] Failure status: classify common yt-dlp/FFmpeg errors into actionable buckets instead of showing `unknown`.
-- [ ] Clear history behavior: keep active downloads, clear completed/failed/stopped only.
+- [x] Clear history behavior: keep active downloads, clear completed/failed/stopped only.
 - [ ] Preview filtering: hide low-value preview/thumbnail/sample media by default, with a settings toggle to show them.
 - [ ] Settings panel cleanup: keep path, dependency checks, and advanced options behind the gear.
 - [ ] Reload resilience: keep recent candidates and running jobs visible after popup close/reopen.
@@ -67,7 +67,7 @@ Recent reference review added these product and engineering patterns:
 - [ ] Network options: optional proxy/config path/extractor args behind advanced settings.
 - [x] Resilient defaults: use retries, fragment retries, retry sleep, socket timeout, `--continue`, merge-output fallback, and safe Windows filename options.
 - [ ] Destination rules: per-site or per-profile download folders.
-- [ ] Cancel/retry controls: stop a running yt-dlp job and retry failed downloads.
+- [x] Cancel/retry controls: stop a running yt-dlp job and retry failed downloads.
 
 ## Milestone 4: Native Host Maturity
 
@@ -76,8 +76,8 @@ Recent reference review added these product and engineering patterns:
 - [ ] Version report: popup should show extension version, host version, yt-dlp version, and FFmpeg version.
 - [ ] Auto-update check: detect outdated yt-dlp and offer update.
 - [ ] Log policy: no per-download user logs by default; keep minimal diagnostic logs only when debug mode is enabled.
-- [ ] Job store cleanup: keep bounded history and remove orphaned progress/spec files.
-- [ ] Error classifier: map common stderr/output into categories such as auth-required, geo-blocked, disk-full, permission-denied, ffmpeg, network-transient, stalled, and unknown.
+- [x] Job store cleanup: keep bounded history and remove orphaned progress/spec files.
+- [x] Error classifier: map common stderr/output into categories such as auth-required, geo-blocked, disk-full, permission-denied, ffmpeg, network-transient, stalled, and unknown.
 - [ ] Security review: validate all native messages and avoid command injection through strict argument arrays.
 - [ ] Cross-browser notes: document Edge/Chrome compatibility and native host registry differences if supported.
 - [ ] Signed release workflow: prepare zip/crx artifacts without committing generated packages.
@@ -107,7 +107,7 @@ Recent reference review added these product and engineering patterns:
 
 ## Backlog
 
-- [ ] Multi-download queue with concurrency limit.
+- [x] Multi-download queue with concurrency limit.
 - [ ] Batch download all selected qualities/items.
 - [ ] Per-download rename prompt before starting.
 - [ ] Import/export settings.

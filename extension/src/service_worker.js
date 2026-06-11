@@ -360,6 +360,27 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  const nativeJobActions = {
+    "native-cancel-job": "cancel",
+    "native-retry-job": "retry",
+    "native-retry-failed": "retry-failed",
+    "native-clear-completed": "clear-completed"
+  };
+  if (message?.type && nativeJobActions[message.type]) {
+    chrome.runtime.sendNativeMessage(
+      nativeHostName,
+      { ...message, type: nativeJobActions[message.type] },
+      (response) => {
+        if (chrome.runtime.lastError) {
+          sendResponse({ ok: false, error: chrome.runtime.lastError.message });
+          return;
+        }
+        sendResponse(response || { ok: false, error: "Native host returned no response" });
+      }
+    );
+    return true;
+  }
+
   if (message?.type === "native-diagnostics") {
     chrome.runtime.sendNativeMessage(nativeHostName, { type: "diagnostics", jobId: message.jobId || null }, (response) => {
       if (chrome.runtime.lastError) {

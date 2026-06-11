@@ -44,6 +44,10 @@ try {
   assert.equal(discoveredPayload.harnessLastDownloadUrl, "https://watch.example.test/videos/sample-cooking-stream");
   assert.equal(discoveredPayload.harnessLastDownloadFormatSelector, "bv*+ba/b");
   assert.equal(discoveredPayload.harnessLastDownloadFormatLabel, "Best available");
+  assert.equal(await page.locator(".job .inline-action", { hasText: "Cancel" }).innerText(), "Cancel");
+  await page.locator(".job .inline-action", { hasText: "Cancel" }).click();
+  await page.waitForSelector(".job.stopped");
+  assert.equal(await page.locator(".job.stopped .inline-action", { hasText: "Retry" }).innerText(), "Retry");
 
   await page.goto(`${baseUrl}?scenario=failed`);
   await page.waitForSelector(".media-card.failed");

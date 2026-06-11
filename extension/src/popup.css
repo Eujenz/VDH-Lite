@@ -396,6 +396,16 @@ button.secondary:hover,
   background: var(--good-soft);
 }
 
+.job.queued {
+  border-color: #9cced8;
+  background: #f0fbfc;
+}
+
+.job.stopped {
+  border-color: var(--line-strong);
+  background: var(--surface-soft);
+}
+
 .job-head {
   display: flex;
   min-width: 0;

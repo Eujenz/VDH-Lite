@@ -50,6 +50,11 @@ STABLE_YTDLP_ARGS = [
     "--trim-filenames",
     "180",
 ]
+DEFAULT_CONCURRENCY_LIMIT = 2
+MAX_CONCURRENCY_LIMIT = 4
+JOB_HISTORY_LIMIT = 40
+ACTIVE_JOB_STATUSES = {"queued", "running", "stopping"}
+TERMINAL_JOB_STATUSES = {"finished", "failed", "stopped", "unknown"}
 ERROR_GUIDANCE = {
     "http-429": {
         "label": "Rate limited",
@@ -541,7 +546,13 @@ def classify_error(message, exit_code=None):
         or "http error 504" in lowered
     ):
         category = "network-transient"
-    elif "stalled" in lowered or "did not get any data block" in lowered or "fragment downloads failed" in lowered:
+    elif (
+        "stalled" in lowered
+        or "did not get any data block" in lowered
+        or "fragment downloads failed" in lowered
+        or "process disappeared" in lowered
+        or "without exit status" in lowered
+    ):
         category = "stalled"
     elif "cancelled" in lowered or "canceled" in lowered or "interrupted by user" in lowered:
         category = "cancelled-by-user"
@@ -596,6 +607,10 @@ def sanitize_job_for_diagnostics(job):
         "retryable": error["retryable"],
         "lastError": error["raw"],
     }
+
+
+def public_job(job):
+    return {key: value for key, value in job.items() if key != "request"}
 
 
 def get_diagnostics(message=None):
@@ -671,9 +686,34 @@ def read_jobs():
         return []
 
 
+def now_iso():
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def clamp_concurrency_limit(value=None):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = DEFAULT_CONCURRENCY_LIMIT
+    return max(1, min(MAX_CONCURRENCY_LIMIT, parsed))
+
+
+def is_active_job(job):
+    return job.get("status") in ACTIVE_JOB_STATUSES
+
+
+def cleanup_job_history(jobs):
+    if len(jobs) <= JOB_HISTORY_LIMIT:
+        return jobs
+    active = [job for job in jobs if is_active_job(job)]
+    inactive = [job for job in jobs if not is_active_job(job)]
+    keep_inactive = max(0, JOB_HISTORY_LIMIT - len(active))
+    return active + inactive[-keep_inactive:]
+
+
 def write_jobs(jobs):
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    JOBS_FILE.write_text(json.dumps(jobs[-20:], ensure_ascii=False, indent=2), encoding="utf-8")
+    JOBS_FILE.write_text(json.dumps(cleanup_job_history(jobs), ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def update_job(job_id, updates):
@@ -686,6 +726,8 @@ def update_job(job_id, updates):
 
 
 def is_process_running(pid):
+    if not pid:
+        return False
     result = subprocess.run(
         ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
         stdout=subprocess.PIPE,
@@ -694,6 +736,19 @@ def is_process_running(pid):
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     return str(pid) in result.stdout
+
+
+def terminate_process(pid):
+    if not pid:
+        return False
+    result = subprocess.run(
+        ["taskkill", "/PID", str(pid), "/T", "/F"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    return result.returncode == 0 or not is_process_running(pid)
 
 
 def elapsed_text(started_at, finished_at=None):
@@ -857,17 +912,20 @@ def parse_progress(job):
         "finalPath": job.get("finalPath"),
         "formatId": job.get("formatId"),
     }
-    progress_path = Path(job.get("progressPath", ""))
-    exit_path = Path(job.get("exitPath", ""))
-    download_dir = Path(job.get("downloadDir", ""))
+    progress_path_value = job.get("progressPath")
+    exit_path_value = job.get("exitPath")
+    download_dir_value = job.get("downloadDir")
+    progress_path = Path(progress_path_value) if progress_path_value else None
+    exit_path = Path(exit_path_value) if exit_path_value else None
+    download_dir = Path(download_dir_value) if download_dir_value else None
 
-    if exit_path.exists() and job.get("exitCode") is None:
+    if exit_path and exit_path.exists() and job.get("exitCode") is None:
         try:
             job["exitCode"] = int(exit_path.read_text(encoding="utf-8").strip())
         except Exception:
             pass
 
-    if progress_path.exists():
+    if progress_path and progress_path.exists():
         try:
             lines = progress_path.read_text(encoding="utf-8", errors="replace").splitlines()
             for line in lines[-200:]:
@@ -937,7 +995,7 @@ def parse_progress(job):
             pass
 
     try:
-        ytdl_files = sorted(download_dir.glob("*.ytdl"), key=lambda path: path.stat().st_mtime, reverse=True)
+        ytdl_files = sorted(download_dir.glob("*.ytdl"), key=lambda path: path.stat().st_mtime, reverse=True) if download_dir else []
         if ytdl_files:
             state = json.loads(ytdl_files[0].read_text(encoding="utf-8"))
             index = state.get("downloader", {}).get("current_fragment", {}).get("index")
@@ -959,10 +1017,19 @@ def get_status():
     jobs = read_jobs()
     changed = False
     for job in jobs:
+        if job.get("status") == "queued":
+            job["running"] = False
+            job["phase"] = "queued"
+            job["elapsedText"] = elapsed_text(job.get("queuedAt") or job.get("createdAt"))
+            continue
+
         running = is_process_running(job.get("pid"))
         persisted_before = {
             key: job.get(key)
             for key in [
+                "status",
+                "phase",
+                "running",
                 "exitCode",
                 "finalPath",
                 "formatId",
@@ -993,11 +1060,19 @@ def get_status():
         if progress["formatId"]:
             job["formatId"] = progress["formatId"]
         job["elapsedText"] = elapsed_text(job.get("startedAt"), job.get("finishedAt"))
-        if not running and job.get("status") == "running":
+        if not running and job.get("status") == "stopping":
+            job["status"] = "stopped"
+            job["phase"] = "stopped"
+            job["lastError"] = job.get("lastError") or "Cancelled by user."
+            job["finishedAt"] = job.get("finishedAt") or now_iso()
+            job["elapsedText"] = elapsed_text(job.get("startedAt"), job.get("finishedAt"))
+            changed = True
+        elif not running and job.get("status") == "running":
             exit_code = job.get("exitCode")
             if exit_code is None:
-                job["status"] = "unknown"
-                job["phase"] = "unknown"
+                job["status"] = "failed"
+                job["phase"] = "failed"
+                job["lastError"] = job.get("lastError") or "Download process disappeared without exit status."
             elif exit_code == 0:
                 job["status"] = "finished"
                 job["percent"] = job["percent"] if job["percent"] is not None else 100
@@ -1013,8 +1088,10 @@ def get_status():
             job["percent"] = job["percent"] if job["percent"] is not None else 100
         elif job.get("status") == "failed":
             job["phase"] = "failed"
+        elif job.get("status") == "stopped":
+            job["phase"] = "stopped"
 
-        if job.get("lastError") or job.get("status") == "failed":
+        if job.get("lastError") or job.get("status") in {"failed", "stopped", "unknown"}:
             error = classify_error(job.get("lastError"), job.get("exitCode"))
             job["errorCategory"] = error["category"]
             job["errorLabel"] = error["label"]
@@ -1024,19 +1101,23 @@ def get_status():
 
         if any(job.get(key) != value for key, value in persisted_before.items()):
             changed = True
+    if schedule_jobs(jobs):
+        changed = True
     if changed:
         write_jobs(jobs)
-    return {"ok": True, "jobs": list(reversed(jobs[-8:]))}
+    return {"ok": True, "jobs": [public_job(job) for job in reversed(jobs[-8:])]}
 
 
 def clear_jobs():
     jobs = read_jobs()
     keep = []
     for job in jobs:
-        if is_process_running(job.get("pid")):
+        if is_active_job(job):
             keep.append(job)
+        else:
+            remove_job_artifacts(job)
     write_jobs(keep)
-    return {"ok": True}
+    return {"ok": True, "cleared": len(jobs) - len(keep)}
 
 
 def forwarded_headers(message):
@@ -1058,6 +1139,291 @@ def forwarded_headers(message):
         if name in allowed and value:
             forwarded[allowed[name]] = value
     return forwarded
+
+
+def retryable_download_request(message):
+    allowed = [
+        "url",
+        "referer",
+        "originUrl",
+        "userAgent",
+        "requestHeaders",
+        "title",
+        "host",
+        "quality",
+        "formatId",
+        "formatSelector",
+        "formatLabel",
+        "downloadDir",
+        "concurrencyLimit",
+    ]
+    request = {key: message.get(key) for key in allowed if key in message}
+    return json.loads(json.dumps(request, ensure_ascii=False))
+
+
+def build_download_command(message):
+    url = message.get("url")
+    if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+        raise ValueError("Invalid URL")
+
+    download_dir = resolve_download_dir(message.get("downloadDir"))
+    title = sanitize_component(message.get("title"), "video")
+    referer = message.get("referer") or message.get("originUrl")
+    user_agent = message.get("userAgent")
+    headers = forwarded_headers(message)
+    output_template = f"{title} - %(id)s.%(ext)s"
+
+    command = [
+        "yt-dlp",
+        "--progress",
+        "--newline",
+        "--no-color",
+        *stable_ytdlp_args(),
+        "--progress-delta",
+        "1",
+        "--progress-template",
+        PROGRESS_TEMPLATE,
+        "--print",
+        "after_move:[VDH-Lite] FinalPath|%(filepath|)s",
+        "--print",
+        "after_move:[VDH-Lite] Format|%(format_id|)s",
+        "-P",
+        str(download_dir),
+        "-o",
+        output_template,
+    ]
+    format_selector = ytdlp_format_selector(message)
+    if format_selector:
+        command.extend(["-f", format_selector])
+    if isinstance(referer, str) and referer.startswith(("http://", "https://")):
+        headers.setdefault("Referer", referer)
+        parsed_referer = urlparse(referer)
+        origin = f"{parsed_referer.scheme}://{parsed_referer.netloc}"
+        headers.setdefault("Origin", origin)
+    if isinstance(user_agent, str) and user_agent.strip():
+        command.extend(["--user-agent", user_agent.strip()])
+    for name, value in headers.items():
+        command.extend(["--add-header", f"{name}: {value}"])
+    command.append(url)
+
+    return {
+        "command": command,
+        "downloadDir": str(download_dir),
+        "title": title,
+        "host": sanitize_component(message.get("host"), "site"),
+        "quality": sanitize_component(message.get("quality"), ""),
+        "formatLabel": sanitize_component(message.get("formatLabel"), ""),
+        "formatSelector": format_selector,
+        "url": url,
+    }
+
+
+def new_job_id():
+    return f"{datetime.now().strftime('%Y%m%d%H%M%S')}-{os.getpid()}-{int(time.time() * 1000) % 100000}"
+
+
+def new_download_job(message, retry_of=None):
+    prepared = build_download_command(message)
+    created_at = now_iso()
+    job = {
+        "id": new_job_id(),
+        "pid": None,
+        "status": "queued",
+        "phase": "queued",
+        "running": False,
+        "title": prepared["title"],
+        "host": prepared["host"],
+        "quality": prepared["quality"],
+        "formatLabel": prepared["formatLabel"],
+        "formatSelector": prepared["formatSelector"],
+        "url": prepared["url"],
+        "downloadDir": prepared["downloadDir"],
+        "finalPath": None,
+        "formatId": None,
+        "progressPath": None,
+        "exitPath": None,
+        "specPath": None,
+        "createdAt": created_at,
+        "queuedAt": created_at,
+        "startedAt": None,
+        "finishedAt": None,
+        "request": retryable_download_request(message),
+    }
+    if retry_of:
+        job["retryOf"] = retry_of
+    return job
+
+
+def launch_job(job):
+    request = job.get("request") or job
+    prepared = build_download_command(request)
+    command = prepared["command"]
+    log(f"Starting: {loggable_command(command)}")
+
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    safe_job_id = sanitize_component(job.get("id"), "job")
+    progress_path = LOG_DIR / f"progress-{stamp}-{safe_job_id}.txt"
+    exit_path = LOG_DIR / f"exit-{stamp}-{safe_job_id}.txt"
+    spec_path = LOG_DIR / f"job-{stamp}-{safe_job_id}.json"
+    runner_path = Path(__file__).with_name("yt_dlp_runner.py")
+    spec_path.write_text(json.dumps({
+        "command": command,
+        "progressPath": str(progress_path),
+        "exitPath": str(exit_path),
+        "env": effective_env(),
+    }, ensure_ascii=False), encoding="utf-8")
+    process = subprocess.Popen(
+        [sys.executable, str(runner_path), str(spec_path)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+
+    job.update({
+        "pid": process.pid,
+        "status": "running",
+        "phase": "initializing",
+        "running": True,
+        "title": prepared["title"],
+        "host": prepared["host"],
+        "quality": prepared["quality"],
+        "formatLabel": prepared["formatLabel"],
+        "formatSelector": prepared["formatSelector"],
+        "url": prepared["url"],
+        "downloadDir": prepared["downloadDir"],
+        "progressPath": str(progress_path),
+        "exitPath": str(exit_path),
+        "specPath": str(spec_path),
+        "startedAt": now_iso(),
+        "finishedAt": None,
+        "lastError": None,
+        "exitCode": None,
+    })
+    return job
+
+
+def running_job_count(jobs):
+    return sum(1 for job in jobs if job.get("status") == "running" and is_process_running(job.get("pid")))
+
+
+def schedule_jobs(jobs, concurrency_limit=None):
+    changed = False
+    limit = clamp_concurrency_limit(concurrency_limit)
+    running = running_job_count(jobs)
+    for job in jobs:
+        if running >= limit:
+            break
+        if job.get("status") != "queued":
+            continue
+        try:
+            launch_job(job)
+            running += 1
+        except Exception as error:
+            job["status"] = "failed"
+            job["phase"] = "failed"
+            job["running"] = False
+            job["lastError"] = str(error)
+            job["finishedAt"] = now_iso()
+        changed = True
+    return changed
+
+
+def remove_job_artifacts(job):
+    try:
+        log_root = LOG_DIR.resolve()
+    except Exception:
+        return
+    for key in ["progressPath", "exitPath", "specPath"]:
+        value = job.get(key)
+        if not value:
+            continue
+        try:
+            path = Path(value).resolve()
+            if log_root not in [path.parent, *path.parents]:
+                continue
+            if path.exists() and path.is_file():
+                path.unlink()
+        except Exception:
+            pass
+
+
+def cancel_job(message):
+    job_id = message.get("jobId")
+    jobs = read_jobs()
+    for job in jobs:
+        if job.get("id") != job_id:
+            continue
+        status = job.get("status")
+        if status == "queued":
+            job.update({
+                "status": "stopped",
+                "phase": "stopped",
+                "running": False,
+                "lastError": "Cancelled before the download started.",
+                "finishedAt": now_iso(),
+            })
+        elif status in {"running", "stopping"}:
+            job["status"] = "stopping"
+            job["phase"] = "stopping"
+            stopped = terminate_process(job.get("pid"))
+            if stopped:
+                job.update({
+                    "status": "stopped",
+                    "phase": "stopped",
+                    "running": False,
+                    "lastError": "Cancelled by user.",
+                    "finishedAt": now_iso(),
+                })
+            else:
+                job["running"] = True
+        else:
+            return {"ok": False, "error": "Job is not active."}
+        schedule_jobs(jobs, message.get("concurrencyLimit"))
+        write_jobs(jobs)
+        return {"ok": True, "jobId": job_id, "status": job.get("status")}
+    return {"ok": False, "error": "Job not found."}
+
+
+def retry_job(message):
+    job_id = message.get("jobId")
+    jobs = read_jobs()
+    for job in jobs:
+        if job.get("id") != job_id:
+            continue
+        if is_active_job(job):
+            return {"ok": False, "error": "Job is still active."}
+        request = job.get("request")
+        if not isinstance(request, dict):
+            return {"ok": False, "error": "Job does not have a retry request."}
+        new_job = new_download_job(request, retry_of=job_id)
+        jobs.append(new_job)
+        schedule_jobs(jobs, message.get("concurrencyLimit") or request.get("concurrencyLimit"))
+        write_jobs(jobs)
+        return {"ok": True, "jobId": new_job["id"], "status": new_job.get("status"), "pid": new_job.get("pid")}
+    return {"ok": False, "error": "Job not found."}
+
+
+def retry_failed_jobs(message=None):
+    message = message or {}
+    jobs = read_jobs()
+    created = []
+    for job in list(jobs):
+        if job.get("status") not in {"failed", "stopped", "unknown"}:
+            continue
+        if job.get("retryable") is False:
+            continue
+        request = job.get("request")
+        if not isinstance(request, dict):
+            continue
+        new_job = new_download_job(request, retry_of=job.get("id"))
+        jobs.append(new_job)
+        created.append(new_job)
+    if created:
+        schedule_jobs(jobs, message.get("concurrencyLimit"))
+        write_jobs(jobs)
+    return {"ok": True, "created": len(created), "jobs": [public_job(job) for job in created]}
 
 
 def discover_media(message):
@@ -1153,105 +1519,23 @@ def loggable_command(command):
 
 
 def start_download(message):
-    url = message.get("url")
-    if not isinstance(url, str) or not url.startswith(("http://", "https://")):
-        raise ValueError("Invalid URL")
-
-    download_dir = resolve_download_dir(message.get("downloadDir"))
-    title = sanitize_component(message.get("title"), "video")
-    referer = message.get("referer") or message.get("originUrl")
-    user_agent = message.get("userAgent")
-    headers = forwarded_headers(message)
-    output_template = f"{title} - %(id)s.%(ext)s"
-
-    command = [
-        "yt-dlp",
-        "--progress",
-        "--newline",
-        "--no-color",
-        *stable_ytdlp_args(),
-        "--progress-delta",
-        "1",
-        "--progress-template",
-        PROGRESS_TEMPLATE,
-        "--print",
-        "after_move:[VDH-Lite] FinalPath|%(filepath|)s",
-        "--print",
-        "after_move:[VDH-Lite] Format|%(format_id|)s",
-        "-P",
-        str(download_dir),
-        "-o",
-        output_template,
-    ]
-    format_selector = ytdlp_format_selector(message)
-    if format_selector:
-        command.extend(["-f", format_selector])
-    if isinstance(referer, str) and referer.startswith(("http://", "https://")):
-        headers.setdefault("Referer", referer)
-        parsed_referer = urlparse(referer)
-        origin = f"{parsed_referer.scheme}://{parsed_referer.netloc}"
-        headers.setdefault("Origin", origin)
-    if isinstance(user_agent, str) and user_agent.strip():
-        command.extend(["--user-agent", user_agent.strip()])
-    for name, value in headers.items():
-        command.extend(["--add-header", f"{name}: {value}"])
-    command.append(url)
-
-    log(f"Starting: {loggable_command(command)}")
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    progress_path = LOG_DIR / f"progress-{stamp}-{os.getpid()}.txt"
-    exit_path = LOG_DIR / f"exit-{stamp}-{os.getpid()}.txt"
-    spec_path = LOG_DIR / f"job-{stamp}-{os.getpid()}.json"
-    runner_path = Path(__file__).with_name("yt_dlp_runner.py")
-    spec_path.write_text(json.dumps({
-        "command": command,
-        "progressPath": str(progress_path),
-        "exitPath": str(exit_path),
-        "env": effective_env(),
-    }, ensure_ascii=False), encoding="utf-8")
-    process = subprocess.Popen(
-        [sys.executable, str(runner_path), str(spec_path)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        stdin=subprocess.DEVNULL,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
-
-    job_id = f"{datetime.now().strftime('%Y%m%d%H%M%S')}-{process.pid}"
-
-    job = {
-        "id": job_id,
-        "pid": process.pid,
-        "status": "running",
-        "phase": "initializing",
-        "title": title,
-        "host": sanitize_component(message.get("host"), "site"),
-        "quality": sanitize_component(message.get("quality"), ""),
-        "formatLabel": sanitize_component(message.get("formatLabel"), ""),
-        "formatSelector": format_selector,
-        "url": url,
-        "downloadDir": str(download_dir),
-        "finalPath": None,
-        "formatId": None,
-        "progressPath": str(progress_path),
-        "exitPath": str(exit_path),
-        "specPath": str(spec_path),
-        "startedAt": datetime.now().isoformat(timespec="seconds"),
-    }
+    job = new_download_job(message)
     jobs = read_jobs()
     jobs.append(job)
+    schedule_jobs(jobs, message.get("concurrencyLimit"))
     write_jobs(jobs)
 
     return {
         "ok": True,
         "jobId": job["id"],
-        "pid": process.pid,
-        "downloadDir": str(download_dir),
-        "progressPath": str(progress_path),
-        "exitPath": str(exit_path),
-        "specPath": str(spec_path),
-        "command": command,
+        "pid": job.get("pid"),
+        "status": job.get("status"),
+        "phase": job.get("phase"),
+        "queued": job.get("status") == "queued",
+        "downloadDir": job.get("downloadDir"),
+        "progressPath": job.get("progressPath"),
+        "exitPath": job.get("exitPath"),
+        "specPath": job.get("specPath"),
     }
 
 
@@ -1277,13 +1561,19 @@ def main():
             send_message(discover_media(message))
         elif kind == "download":
             send_message(start_download(message))
+        elif kind == "cancel":
+            send_message(cancel_job(message))
+        elif kind == "retry":
+            send_message(retry_job(message))
+        elif kind == "retry-failed":
+            send_message(retry_failed_jobs(message))
         elif kind == "status":
             send_message(get_status())
         elif kind == "diagnostics":
             send_message(get_diagnostics(message))
         elif kind == "pick-folder":
             send_message(pick_folder(message))
-        elif kind == "clear-jobs":
+        elif kind in {"clear-jobs", "clear-completed"}:
             send_message(clear_jobs())
         else:
             send_message({"ok": False, "error": f"Unknown message type: {kind}"})
