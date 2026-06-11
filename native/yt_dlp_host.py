@@ -20,6 +20,7 @@ JOBS_FILE = LOG_DIR / "jobs.json"
 PROGRESS_PREFIX = "[VDH-Lite] Progress|"
 FINAL_PATH_PREFIX = "[VDH-Lite] FinalPath|"
 FORMAT_PREFIX = "[VDH-Lite] Format|"
+DURATION_PREFIX = "[VDH-Lite] Duration|"
 PROGRESS_TEMPLATE = (
     "download:"
     "[VDH-Lite] Progress|"
@@ -912,6 +913,7 @@ def parse_progress(job):
         "totalBytesEstimate": None,
         "finalPath": job.get("finalPath"),
         "formatId": job.get("formatId"),
+        "duration": job.get("duration"),
     }
     progress_path_value = job.get("progressPath")
     exit_path_value = job.get("exitPath")
@@ -944,6 +946,12 @@ def parse_progress(job):
 
                 if line.startswith(FORMAT_PREFIX):
                     progress_info["formatId"] = clean_template_value(line[len(FORMAT_PREFIX):])
+                    continue
+
+                if line.startswith(DURATION_PREFIX):
+                    duration = parse_number(line[len(DURATION_PREFIX):])
+                    if duration and duration > 0:
+                        progress_info["duration"] = duration
                     continue
 
                 phase = phase_from_output_line(line)
@@ -1034,6 +1042,7 @@ def get_status():
                 "exitCode",
                 "finalPath",
                 "formatId",
+                "duration",
                 "lastError",
                 "errorCategory",
                 "errorLabel",
@@ -1060,6 +1069,8 @@ def get_status():
             job["finalPath"] = progress["finalPath"]
         if progress["formatId"]:
             job["formatId"] = progress["formatId"]
+        if progress["duration"]:
+            job["duration"] = progress["duration"]
         job["elapsedText"] = elapsed_text(job.get("startedAt"), job.get("finishedAt"))
         if not running and job.get("status") == "stopping":
             job["status"] = "stopped"
@@ -1155,6 +1166,7 @@ def retryable_download_request(message):
         "formatId",
         "formatSelector",
         "formatLabel",
+        "duration",
         "downloadDir",
         "concurrencyLimit",
         "downloadSpeedProfile",
@@ -1189,9 +1201,13 @@ def build_download_command(message):
         "--progress-template",
         PROGRESS_TEMPLATE,
         "--print",
+        "[VDH-Lite] Duration|%(duration|)s",
+        "--print",
         "after_move:[VDH-Lite] FinalPath|%(filepath|)s",
         "--print",
         "after_move:[VDH-Lite] Format|%(format_id|)s",
+        "--print",
+        "after_move:[VDH-Lite] Duration|%(duration|)s",
         "-P",
         str(download_dir),
         "-o",
@@ -1219,6 +1235,7 @@ def build_download_command(message):
         "quality": sanitize_component(message.get("quality"), ""),
         "formatLabel": sanitize_component(message.get("formatLabel"), ""),
         "formatSelector": format_selector,
+        "duration": as_float(message.get("duration")),
         "speedProfile": speed_key,
         "speedProfileLabel": speed_label,
         "concurrentFragments": concurrent_fragments,
@@ -1245,6 +1262,7 @@ def new_download_job(message, retry_of=None):
         "quality": prepared["quality"],
         "formatLabel": prepared["formatLabel"],
         "formatSelector": prepared["formatSelector"],
+        "duration": prepared["duration"],
         "speedProfile": prepared["speedProfile"],
         "speedProfileLabel": prepared["speedProfileLabel"],
         "concurrentFragments": prepared["concurrentFragments"],
@@ -1304,6 +1322,7 @@ def launch_job(job):
         "quality": prepared["quality"],
         "formatLabel": prepared["formatLabel"],
         "formatSelector": prepared["formatSelector"],
+        "duration": prepared["duration"] or job.get("duration"),
         "speedProfile": prepared["speedProfile"],
         "speedProfileLabel": prepared["speedProfileLabel"],
         "concurrentFragments": prepared["concurrentFragments"],

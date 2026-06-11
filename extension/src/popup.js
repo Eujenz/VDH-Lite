@@ -660,9 +660,14 @@ function qualityOptionsForItem(item) {
   return [...values];
 }
 
-function formatDuration(seconds) {
+function numericDuration(seconds) {
   const value = Number(seconds);
-  if (!Number.isFinite(value) || value <= 0) return "";
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function formatDuration(seconds) {
+  const value = numericDuration(seconds);
+  if (!value) return "";
   const rounded = Math.round(value);
   const minutes = Math.floor(rounded / 60);
   const rest = rounded % 60;
@@ -692,7 +697,8 @@ function itemForDiscoveredDownload(group, media, discovery) {
     ...fallbackItem,
     url,
     originUrl: group.pageUrl || fallbackItem?.originUrl || url,
-    requestHeaders: fallbackItem?.requestHeaders || {}
+    requestHeaders: fallbackItem?.requestHeaders || {},
+    duration: numericDuration(media?.duration) || numericDuration(discovery?.duration) || numericDuration(fallbackItem?.duration)
   };
 }
 
@@ -706,7 +712,7 @@ function applyDiscoveryToGroup(group) {
   group.discovery = discovery;
   group.title = media?.title || discovery.title || group.title;
   group.thumbnail = media?.thumbnail || discovery.thumbnail || group.thumbnail;
-  group.duration = media?.duration || discovery.duration || null;
+  group.duration = numericDuration(media?.duration) || numericDuration(discovery.duration);
   group.uploader = media?.uploader || discovery.uploader || "";
   group.formats = media?.formats || [];
   const downloadItem = itemForDiscoveredDownload(group, media, discovery);
@@ -724,6 +730,7 @@ function applyDiscoveryToGroup(group) {
       formatId: choice.formatId || "",
       formatSelector: choice.selector || "",
       formatLabel: choice.label || "",
+      duration: group.duration,
       kind: choice.kind || "",
       source: choice.source || "yt-dlp"
     }));
@@ -1009,6 +1016,7 @@ function showCandidateDetails(group, job) {
       `- ${tr("details.status")}: ${translateStatus(job.status)}`,
       `- ${tr("details.phase")}: ${job.phase || tr("value.unknown")}`,
       `- ${tr("details.quality")}: ${displayQuality(job.quality) || tr("value.unknown")}`,
+      `- ${tr("details.duration")}: ${formatDuration(job.duration || group.duration) || tr("value.unknown")}`,
       `- ${tr("details.percent")}: ${job.percent ?? tr("value.unknown")}`,
       `- ${tr("details.finalPath")}: ${job.finalPath || tr("value.unknown")}`,
       `- ${tr("details.errorCategory")}: ${job.errorCategory || tr("value.unknown")}`,
@@ -1260,7 +1268,8 @@ function normalizeDownloadChoice(item, qualityOrOption) {
       quality: qualityOrOption.quality || detectQuality(item),
       formatId: qualityOrOption.formatId || "",
       formatSelector: qualityOrOption.formatSelector || "",
-      formatLabel: qualityOrOption.formatLabel || qualityOrOption.label || ""
+      formatLabel: qualityOrOption.formatLabel || qualityOrOption.label || "",
+      duration: numericDuration(qualityOrOption.duration) || numericDuration(item?.duration)
     };
   }
 
@@ -1268,7 +1277,8 @@ function normalizeDownloadChoice(item, qualityOrOption) {
     quality: qualityOrOption || detectQuality(item),
     formatId: "",
     formatSelector: "",
-    formatLabel: ""
+    formatLabel: "",
+    duration: numericDuration(item?.duration)
   };
 }
 
@@ -1302,6 +1312,7 @@ async function runNativeDownload(item, qualityOverride) {
     formatId: downloadChoice.formatId,
     formatSelector: downloadChoice.formatSelector,
     formatLabel: downloadChoice.formatLabel,
+    duration: downloadChoice.duration,
     downloadSpeedProfile: speedProfileSelect?.value || DEFAULT_DOWNLOAD_SPEED_PROFILE,
     downloadDir: downloadDirInput.value.trim() || DEFAULT_DOWNLOAD_DIR,
     concurrencyLimit: concurrencyLimitValue()
@@ -1436,6 +1447,12 @@ function renderJobs(jobs) {
       qualityBadge.className = "badge quality-badge";
       qualityBadge.textContent = displayQuality(job.quality);
       meta.append(qualityBadge);
+    }
+    if (job.duration) {
+      const durationBadge = document.createElement("span");
+      durationBadge.className = "badge neutral";
+      durationBadge.textContent = formatDuration(job.duration);
+      meta.append(durationBadge);
     }
     if (job.speedProfileLabel) {
       const speedProfileBadge = document.createElement("span");

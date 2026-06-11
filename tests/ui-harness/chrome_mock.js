@@ -14,6 +14,7 @@ function createDownloadJob(message, queued = false) {
     quality: message.quality || "Best",
     formatLabel: message.formatLabel || "",
     formatSelector: message.formatSelector || "",
+    duration: message.duration || null,
     url: message.url,
     percent: 0,
     phase: queued ? "queued" : "initializing",
@@ -45,6 +46,7 @@ function updateHarnessDataset(message) {
     dataset.harnessLastDownloadUrl = message.url || "";
     dataset.harnessLastDownloadFormatLabel = message.formatLabel || "";
     dataset.harnessLastDownloadFormatSelector = message.formatSelector || "";
+    dataset.harnessLastDownloadDuration = message.duration ? String(message.duration) : "";
   }
 }
 

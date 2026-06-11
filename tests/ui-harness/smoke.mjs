@@ -52,6 +52,8 @@ try {
   assert.equal(discoveredPayload.harnessLastDownloadUrl, "https://watch.example.test/videos/sample-cooking-stream");
   assert.equal(discoveredPayload.harnessLastDownloadFormatSelector, "bv*+ba/b");
   assert.equal(discoveredPayload.harnessLastDownloadFormatLabel, "Best available");
+  assert.equal(discoveredPayload.harnessLastDownloadDuration, "194");
+  await page.waitForSelector(".job .badge >> text=3:14");
   assert.equal(await page.locator(".job .inline-action", { hasText: "Cancel" }).innerText(), "Cancel");
   await page.locator(".job .inline-action", { hasText: "Cancel" }).click();
   await page.waitForSelector(".job.stopped");
