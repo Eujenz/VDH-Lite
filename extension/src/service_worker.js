@@ -43,6 +43,32 @@ function updateBadgeFromJobs(jobs = []) {
   });
 }
 
+function diagnosticsEnvelope(nativeResponse = {}, sendResponse) {
+  const manifest = chrome.runtime.getManifest();
+  chrome.tabs.query({ active: true, currentWindow: true }, ([tab]) => {
+    let activeTabHost = "";
+    try {
+      activeTabHost = tab?.url ? new URL(tab.url).hostname : "";
+    } catch {
+      activeTabHost = "";
+    }
+
+    sendResponse({
+      ...nativeResponse,
+      ok: nativeResponse.ok !== false,
+      extension: {
+        name: manifest.name,
+        version: manifest.version,
+        manifestVersion: manifest.manifest_version
+      },
+      browser: {
+        userAgent: navigator.userAgent || ""
+      },
+      activeTabHost
+    });
+  });
+}
+
 function normalizeUrl(url) {
   try {
     const parsed = new URL(url);
@@ -311,6 +337,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       if (response?.ok) updateBadgeFromJobs(response.jobs || []);
       sendResponse(response || { ok: false, error: "Native host returned no response" });
+    });
+    return true;
+  }
+
+  if (message?.type === "native-diagnostics") {
+    chrome.runtime.sendNativeMessage(nativeHostName, { type: "diagnostics", jobId: message.jobId || null }, (response) => {
+      if (chrome.runtime.lastError) {
+        diagnosticsEnvelope({
+          ok: true,
+          nativeConnected: false,
+          nativeError: chrome.runtime.lastError.message,
+          errorCategory: "binary-missing",
+          errorLabel: "Native host not connected",
+          errorSummary: "Chrome could not connect to the VDH Lite native host.",
+          nextAction: "Run install.bat, restart Chrome, then test the native host again.",
+          jobs: []
+        }, sendResponse);
+        return;
+      }
+      diagnosticsEnvelope(response || { ok: false, error: "Native host returned no response" }, sendResponse);
     });
     return true;
   }

@@ -32,6 +32,9 @@ try {
   await page.locator("[data-filter='failed']").click();
   assert.equal(await page.locator(".media-card.failed").count(), 1);
   assert.equal(await page.locator(".media-card.failed button").first().innerText(), "Retry");
+  await page.waitForSelector(".job-guidance");
+  assert.match(await page.locator(".job-guidance").innerText(), /Sign-in or cookies required/);
+  assert.equal(await page.locator(".job .inline-action").innerText(), "Copy diagnostics");
 
   await page.goto(`${baseUrl}?scenario=empty`);
   await page.waitForSelector(".empty-state");

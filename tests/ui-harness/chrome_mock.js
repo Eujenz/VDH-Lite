@@ -19,6 +19,48 @@ function createDownloadJob(message) {
   };
 }
 
+function diagnosticsForState(state, jobId) {
+  const jobs = (jobId ? state.jobs.filter((job) => job.id === jobId) : state.jobs).map((job) => ({
+    id: job.id,
+    status: job.status,
+    phase: job.phase,
+    title: job.title,
+    siteHost: job.host,
+    quality: job.quality,
+    percent: job.percent,
+    elapsedText: job.elapsedText,
+    finalFilename: job.finalPath ? job.finalPath.split(/[\\/]/).pop() : null,
+    errorCategory: job.errorCategory || "unknown",
+    errorLabel: job.errorLabel || "Unknown failure",
+    errorSummary: job.errorSummary || "Harness diagnostic summary",
+    nextAction: job.nextAction || "Copy diagnostics and include them in a support report.",
+    retryable: Boolean(job.retryable),
+    lastError: job.lastError || null
+  }));
+
+  return {
+    ok: true,
+    nativeConnected: true,
+    hostVersion: "harness",
+    hostPath: "C:\\Users\\demo\\AppData\\Local\\VDH Lite\\NativeHost\\yt_dlp_host.py",
+    logDir: "C:\\Users\\demo\\AppData\\Local\\VDH Lite",
+    deps: {
+      ytDlp: { installed: true, version: "yt-dlp harness" },
+      ffmpeg: { installed: true, version: "ffmpeg harness" }
+    },
+    extension: {
+      name: "VDH Lite",
+      version: "harness",
+      manifestVersion: 3
+    },
+    browser: {
+      userAgent: navigator.userAgent
+    },
+    activeTabHost: state.tab.url ? new URL(state.tab.url).hostname : "",
+    jobs
+  };
+}
+
 export function installChromeMock(scenario) {
   const state = {
     tab: clone(scenario.tab),
@@ -28,6 +70,7 @@ export function installChromeMock(scenario) {
       downloadDir: "%USERPROFILE%\\Downloads\\VDH Lite"
     },
     messages: [],
+    clipboardText: "",
     badge: {
       text: "",
       color: ""
@@ -35,6 +78,18 @@ export function installChromeMock(scenario) {
   };
 
   window.__VDH_LITE_HARNESS__ = state;
+  try {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        async writeText(text) {
+          state.clipboardText = text;
+        }
+      }
+    });
+  } catch {
+    // Browser fallback copy path will still display diagnostics in the textarea.
+  }
 
   window.chrome = {
     action: {
@@ -110,6 +165,8 @@ export function installChromeMock(scenario) {
             };
           case "native-status":
             return { ok: true, jobs: clone(state.jobs) };
+          case "native-diagnostics":
+            return diagnosticsForState(state, message.jobId || null);
           case "native-clear-jobs":
             state.jobs = state.jobs.filter((job) => job.running || job.status === "running");
             return { ok: true };

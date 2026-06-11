@@ -20,6 +20,7 @@ const settingsToggle = document.querySelector("#settings-toggle");
 const settingsPanel = document.querySelector("#settings-panel");
 const depsStatus = document.querySelector("#deps-status");
 const installDepsButton = document.querySelector("#install-deps");
+const copyDiagnosticsButton = document.querySelector("#copy-diagnostics");
 
 const DEFAULT_DOWNLOAD_DIR = "%USERPROFILE%\\Downloads\\VDH Lite";
 const FILTERS = [
@@ -43,6 +44,99 @@ function setStatus(title, detail = "", tone = "") {
   statusDetailEl.textContent = detail;
   statusCard.classList.remove("ready", "warning", "error");
   if (tone) statusCard.classList.add(tone);
+}
+
+function valueOrUnknown(value) {
+  return value == null || value === "" ? "unknown" : String(value);
+}
+
+function dependencySummary(dep) {
+  if (!dep) return "unknown";
+  if (!dep.installed) return "missing";
+  return dep.version || dep.path || "installed";
+}
+
+function formatDiagnostics(payload, sourceJob = null) {
+  const lines = [
+    "VDH Lite Diagnostics",
+    `Generated: ${new Date().toISOString()}`,
+    "",
+    "Extension",
+    `- Name: ${valueOrUnknown(payload.extension?.name)}`,
+    `- Version: ${valueOrUnknown(payload.extension?.version)}`,
+    `- Manifest: ${valueOrUnknown(payload.extension?.manifestVersion)}`,
+    `- Active tab host: ${valueOrUnknown(payload.activeTabHost)}`,
+    "",
+    "Browser",
+    `- User agent: ${valueOrUnknown(payload.browser?.userAgent)}`,
+    "",
+    "Native host",
+    `- Connected: ${payload.nativeConnected === false ? "no" : "yes"}`,
+    `- Version: ${valueOrUnknown(payload.hostVersion || payload.deps?.hostVersion)}`,
+    `- Host path: ${valueOrUnknown(payload.hostPath || payload.deps?.hostPath)}`,
+    `- Log dir: ${valueOrUnknown(payload.logDir || payload.deps?.logDir)}`,
+    `- Native error: ${valueOrUnknown(payload.nativeError || payload.error)}`,
+    "",
+    "Dependencies",
+    `- yt-dlp: ${dependencySummary(payload.deps?.ytDlp)}`,
+    `- FFmpeg: ${dependencySummary(payload.deps?.ffmpeg)}`
+  ];
+
+  const jobs = payload.jobs?.length ? payload.jobs : sourceJob ? [sourceJob] : [];
+  if (jobs.length) {
+    lines.push("", "Jobs");
+    for (const job of jobs) {
+      lines.push(
+        `- ID: ${valueOrUnknown(job.id)}`,
+        `  Status: ${valueOrUnknown(job.status)}`,
+        `  Phase: ${valueOrUnknown(job.phase)}`,
+        `  Site host: ${valueOrUnknown(job.siteHost || job.host)}`,
+        `  Quality: ${valueOrUnknown(job.quality)}`,
+        `  Percent: ${valueOrUnknown(job.percent)}`,
+        `  Final file: ${valueOrUnknown(job.finalFilename || (job.finalPath ? job.finalPath.split(/[\\/]/).pop() : ""))}`,
+        `  Error category: ${valueOrUnknown(job.errorCategory)}`,
+        `  Error label: ${valueOrUnknown(job.errorLabel)}`,
+        `  Summary: ${valueOrUnknown(job.errorSummary)}`,
+        `  Next action: ${valueOrUnknown(job.nextAction)}`,
+        `  Last error: ${valueOrUnknown(job.lastError)}`
+      );
+    }
+  }
+
+  return lines.join("\n");
+}
+
+async function copyText(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+
+  commandOutput.value = text;
+  commandPanel.hidden = false;
+  commandOutput.focus();
+  commandOutput.select();
+  document.execCommand("copy");
+}
+
+async function copyDiagnostics(job = null) {
+  const button = job ? null : copyDiagnosticsButton;
+  if (button) button.disabled = true;
+  try {
+    const payload = await chrome.runtime.sendMessage({
+      type: "native-diagnostics",
+      jobId: job?.id || null
+    });
+    const text = formatDiagnostics(payload || {}, job);
+    await copyText(text);
+    commandOutput.value = text;
+    commandPanel.hidden = false;
+    setStatus("Diagnostics copied", "Paste them into a support report. Full media URLs are intentionally omitted.", "ready");
+  } catch (error) {
+    setStatus("Diagnostics copy failed", error?.message || "Could not write to the clipboard.", "error");
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 
 function describeUrl(url) {
@@ -393,6 +487,9 @@ function showCandidateDetails(group, job) {
       `- Quality: ${job.quality || "unknown"}`,
       `- Percent: ${job.percent ?? "unknown"}`,
       `- Final path: ${job.finalPath || "unknown"}`,
+      `- Error category: ${job.errorCategory || "unknown"}`,
+      `- Error summary: ${job.errorSummary || "unknown"}`,
+      `- Next action: ${job.nextAction || "unknown"}`,
       `- Error: ${job.lastError || "none"}`
     );
   }
@@ -687,11 +784,27 @@ function renderJobs(jobs) {
       pathText.title = job.finalPath;
       meta.append(pathText);
     }
+    if (job.errorSummary || job.nextAction) {
+      const guidance = document.createElement("span");
+      guidance.className = "job-guidance";
+      guidance.textContent = [job.errorLabel || job.errorCategory, job.errorSummary, job.nextAction]
+        .filter(Boolean)
+        .join(" | ");
+      meta.append(guidance);
+    }
     if (job.lastError) {
       const errorText = document.createElement("span");
       errorText.className = "job-error";
       errorText.textContent = job.lastError;
       meta.append(errorText);
+    }
+    if (job.status === "failed") {
+      const diagnosticsButton = document.createElement("button");
+      diagnosticsButton.type = "button";
+      diagnosticsButton.className = "secondary inline-action";
+      diagnosticsButton.textContent = "Copy diagnostics";
+      diagnosticsButton.addEventListener("click", () => copyDiagnostics(job));
+      meta.append(diagnosticsButton);
     }
 
     row.append(head, progress, meta);
@@ -846,6 +959,10 @@ installDepsButton.addEventListener("click", async () => {
     return;
   }
   renderDeps(response.deps);
+});
+
+copyDiagnosticsButton.addEventListener("click", () => {
+  copyDiagnostics();
 });
 
 loadSettings()

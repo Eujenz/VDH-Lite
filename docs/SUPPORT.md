@@ -36,16 +36,37 @@ winget install --id Gyan.FFmpeg
 
 ## Downloads Fail
 
-When reporting a failed download, include:
+First use the failed job row in the popup:
+
+1. Open the popup.
+2. Find the failed download.
+3. Read the short explanation and next action.
+4. Click `Copy diagnostics`.
+5. Paste the diagnostics into the issue report.
+
+The copied diagnostics include:
 
 - VDH Lite extension version
 - native host version
-- browser and browser version
-- Windows version
-- page URL
-- selected quality
-- whether the native host test passes
-- the final error shown in the popup
+- browser user agent
+- active tab host
+- `yt-dlp` and FFmpeg status
+- job status, phase, selected quality, and progress
+- error category, explanation, next action, and final error
+
+The copied diagnostics intentionally omit full media URLs by default. They include the site host instead.
+
+Common error categories:
+
+- `auth-required`: the site likely needs sign-in or browser cookies.
+- `geo-blocked`: the media is unavailable from the current region or network.
+- `network-transient`: the connection timed out, reset, or failed temporarily.
+- `disk-full`: the save drive is full.
+- `permission-denied`: the save folder is not writable.
+- `ffmpeg`: FFmpeg is missing or failed during merge/conversion.
+- `binary-missing`: the native host, `yt-dlp`, or another local tool is missing.
+
+If the native host itself is missing, open settings and click `Copy diagnostics`; the popup will still copy extension-side diagnostic details.
 
 ## Debug Logs
 

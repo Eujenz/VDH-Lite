@@ -102,6 +102,12 @@ export const SCENARIOS = {
         quality: "1080P",
         url: hlsItem.url,
         percent: 13,
+        phase: "failed",
+        errorCategory: "auth-required",
+        errorLabel: "Sign-in or cookies required",
+        errorSummary: "The site rejected the request or needs a signed-in browser session.",
+        nextAction: "Open the page in the browser, confirm it plays, then retry.",
+        retryable: false,
         lastError: "ERROR: HTTP Error 403: Forbidden",
         elapsedText: "0:09",
         startedAt: "2026-06-11T10:00:00"

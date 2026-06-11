@@ -34,6 +34,80 @@ PROGRESS_TEMPLATE = (
     "%(progress.fragment_index|)s|"
     "%(progress.fragment_count|)s"
 )
+ERROR_GUIDANCE = {
+    "http-429": {
+        "label": "Rate limited",
+        "summary": "The site is slowing down or blocking repeated download requests.",
+        "nextAction": "Wait a while, then retry. Avoid starting many downloads from the same site at once.",
+        "retryable": True,
+    },
+    "auth-required": {
+        "label": "Sign-in or cookies required",
+        "summary": "The site rejected the request or needs a signed-in browser session.",
+        "nextAction": "Open the page in the browser, confirm it plays, then retry. Cookie import will be added in an advanced settings pass.",
+        "retryable": False,
+    },
+    "geo-blocked": {
+        "label": "Region blocked",
+        "summary": "The media appears unavailable from this region or network.",
+        "nextAction": "Try a supported source or a network where the media is available.",
+        "retryable": False,
+    },
+    "not-found": {
+        "label": "Media not found",
+        "summary": "The media URL is unavailable, removed, private, or no longer valid.",
+        "nextAction": "Refresh the page, play the media again, then choose the newly detected candidate.",
+        "retryable": False,
+    },
+    "disk-full": {
+        "label": "Disk is full",
+        "summary": "Windows or yt-dlp could not write the file because storage is full.",
+        "nextAction": "Free disk space or choose a different save folder, then retry.",
+        "retryable": True,
+    },
+    "permission-denied": {
+        "label": "Save folder blocked",
+        "summary": "VDH Lite could not write to the selected folder.",
+        "nextAction": "Choose a folder you can write to, then retry.",
+        "retryable": True,
+    },
+    "binary-missing": {
+        "label": "Tool missing",
+        "summary": "A required local tool is missing or not visible on PATH.",
+        "nextAction": "Use Install missing, then restart Chrome and test the native host again.",
+        "retryable": True,
+    },
+    "ffmpeg": {
+        "label": "FFmpeg problem",
+        "summary": "The download reached a step that needs FFmpeg, but FFmpeg failed or is missing.",
+        "nextAction": "Install or update FFmpeg, then retry the download.",
+        "retryable": True,
+    },
+    "network-transient": {
+        "label": "Network interrupted",
+        "summary": "The connection timed out, reset, or failed temporarily.",
+        "nextAction": "Retry after the connection stabilizes.",
+        "retryable": True,
+    },
+    "stalled": {
+        "label": "Download stalled",
+        "summary": "The download stopped receiving data or fragments.",
+        "nextAction": "Retry. If it repeats, refresh the page and pick a newly detected candidate.",
+        "retryable": True,
+    },
+    "cancelled-by-user": {
+        "label": "Cancelled",
+        "summary": "The download was stopped before it completed.",
+        "nextAction": "Retry if you still want this media.",
+        "retryable": True,
+    },
+    "unknown": {
+        "label": "Unknown failure",
+        "summary": "VDH Lite could not classify this error yet.",
+        "nextAction": "Copy diagnostics and include them in a support report.",
+        "retryable": False,
+    },
+}
 
 
 def log(message):
@@ -177,6 +251,150 @@ def get_deps():
         "ytDlp": command_version("yt-dlp"),
         "ffmpeg": command_version("ffmpeg"),
         "winget": command_version("winget"),
+    }
+
+
+def classify_error(message, exit_code=None):
+    text = str(message or "").strip()
+    lowered = text.lower()
+
+    category = "unknown"
+    if not text and exit_code not in (None, 0):
+        text = f"yt-dlp exited with code {exit_code}"
+        lowered = text.lower()
+
+    if "429" in lowered or "too many requests" in lowered or "rate limit" in lowered:
+        category = "http-429"
+    elif (
+        "not available in your country" in lowered
+        or "geo-restricted" in lowered
+        or "geo restricted" in lowered
+        or "blocked in your country" in lowered
+        or "not available from your location" in lowered
+    ):
+        category = "geo-blocked"
+    elif (
+        "login required" in lowered
+        or "sign in" in lowered
+        or "authentication" in lowered
+        or "unauthorized" in lowered
+        or "http error 401" in lowered
+        or "http error 403" in lowered
+        or "forbidden" in lowered
+        or "private video" in lowered
+        or "cookies" in lowered
+    ):
+        category = "auth-required"
+    elif "ffmpeg" in lowered or "ffprobe" in lowered or "[merger]" in lowered:
+        category = "ffmpeg"
+    elif (
+        "yt-dlp" in lowered and ("not recognized" in lowered or "no such file" in lowered)
+        or "filenotfounderror" in lowered
+    ):
+        category = "binary-missing"
+    elif (
+        "http error 404" in lowered
+        or "not found" in lowered
+        or "video unavailable" in lowered
+        or "this video is unavailable" in lowered
+        or "has been removed" in lowered
+    ):
+        category = "not-found"
+    elif "no space left" in lowered or "disk full" in lowered or "errno 28" in lowered:
+        category = "disk-full"
+    elif (
+        "permission denied" in lowered
+        or "access is denied" in lowered
+        or "errno 13" in lowered
+        or "winerror 5" in lowered
+    ):
+        category = "permission-denied"
+    elif (
+        "timed out" in lowered
+        or "timeout" in lowered
+        or "connection reset" in lowered
+        or "connection aborted" in lowered
+        or "network unreachable" in lowered
+        or "temporary failure" in lowered
+        or "remote end closed" in lowered
+        or "http error 502" in lowered
+        or "http error 503" in lowered
+        or "http error 504" in lowered
+    ):
+        category = "network-transient"
+    elif "stalled" in lowered or "did not get any data block" in lowered or "fragment downloads failed" in lowered:
+        category = "stalled"
+    elif "cancelled" in lowered or "canceled" in lowered or "interrupted by user" in lowered:
+        category = "cancelled-by-user"
+
+    guidance = ERROR_GUIDANCE[category]
+    return {
+        "category": category,
+        "label": guidance["label"],
+        "summary": guidance["summary"],
+        "nextAction": guidance["nextAction"],
+        "retryable": guidance["retryable"],
+        "raw": text or None,
+    }
+
+
+def job_host(job):
+    host = sanitize_component(job.get("host"), "")
+    if host:
+        return host
+    try:
+        return urlparse(str(job.get("url") or "")).hostname or ""
+    except Exception:
+        return ""
+
+
+def safe_basename(path_value):
+    if not path_value:
+        return None
+    text = str(path_value)
+    normalized = text.replace("\\", "/").rstrip("/")
+    name = normalized.rsplit("/", 1)[-1]
+    return sanitize_component(name, "download")
+
+
+def sanitize_job_for_diagnostics(job):
+    error = classify_error(job.get("lastError"), job.get("exitCode"))
+    return {
+        "id": job.get("id"),
+        "status": job.get("status"),
+        "phase": job.get("phase"),
+        "title": sanitize_component(job.get("title"), "video"),
+        "siteHost": job_host(job),
+        "quality": job.get("quality"),
+        "percent": job.get("percent"),
+        "elapsedText": job.get("elapsedText"),
+        "finalFilename": safe_basename(job.get("finalPath")),
+        "exitCode": job.get("exitCode"),
+        "errorCategory": error["category"],
+        "errorLabel": error["label"],
+        "errorSummary": error["summary"],
+        "nextAction": error["nextAction"],
+        "retryable": error["retryable"],
+        "lastError": error["raw"],
+    }
+
+
+def get_diagnostics(message=None):
+    message = message or {}
+    status = get_status()
+    jobs = status.get("jobs", [])
+    job_id = message.get("jobId")
+    if job_id:
+        jobs = [job for job in jobs if job.get("id") == job_id]
+    return {
+        "ok": True,
+        "nativeConnected": True,
+        "hostVersion": HOST_VERSION,
+        "hostPath": str(Path(__file__).resolve()),
+        "logDir": str(LOG_DIR),
+        "defaultDownloadDir": str(DEFAULT_DOWNLOAD_DIR),
+        "deps": get_deps(),
+        "jobs": [sanitize_job_for_diagnostics(job) for job in jobs[:5]],
     }
 
 
@@ -525,7 +743,17 @@ def get_status():
         running = is_process_running(job.get("pid"))
         persisted_before = {
             key: job.get(key)
-            for key in ["exitCode", "finalPath", "formatId", "lastError"]
+            for key in [
+                "exitCode",
+                "finalPath",
+                "formatId",
+                "lastError",
+                "errorCategory",
+                "errorLabel",
+                "errorSummary",
+                "nextAction",
+                "retryable",
+            ]
         }
         progress = parse_progress(job)
         job["running"] = running
@@ -566,6 +794,14 @@ def get_status():
             job["percent"] = job["percent"] if job["percent"] is not None else 100
         elif job.get("status") == "failed":
             job["phase"] = "failed"
+
+        if job.get("lastError") or job.get("status") == "failed":
+            error = classify_error(job.get("lastError"), job.get("exitCode"))
+            job["errorCategory"] = error["category"]
+            job["errorLabel"] = error["label"]
+            job["errorSummary"] = error["summary"]
+            job["nextAction"] = error["nextAction"]
+            job["retryable"] = error["retryable"]
 
         if any(job.get(key) != value for key, value in persisted_before.items()):
             changed = True
@@ -742,6 +978,8 @@ def main():
             send_message(start_download(message))
         elif kind == "status":
             send_message(get_status())
+        elif kind == "diagnostics":
+            send_message(get_diagnostics(message))
         elif kind == "pick-folder":
             send_message(pick_folder(message))
         elif kind == "clear-jobs":
