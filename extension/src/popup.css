@@ -525,6 +525,16 @@ button.secondary:hover,
   word-break: break-word;
 }
 
+.job-path {
+  display: block;
+  flex-basis: 100%;
+  max-width: 100%;
+  min-width: 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .actions {
   align-items: start;
   flex: 0 0 auto;

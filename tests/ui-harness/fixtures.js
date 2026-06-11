@@ -123,6 +123,8 @@ export const SCENARIOS = {
         quality: "720P",
         url: mp4Item.url,
         percent: 100,
+        phase: "finished",
+        finalPath: "C:\\Users\\demo\\Downloads\\VDH Lite\\Sample Cooking Stream - abc123.mp4",
         elapsedText: "1:22",
         startedAt: "2026-06-11T10:00:00",
         finishedAt: "2026-06-11T10:01:22"

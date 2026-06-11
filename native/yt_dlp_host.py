@@ -17,6 +17,23 @@ DEFAULT_DOWNLOAD_DIR = Path.home() / "Downloads" / "VDH Lite"
 LOG_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "VDH Lite"
 LOG_FILE = LOG_DIR / "yt-dlp-host.log"
 JOBS_FILE = LOG_DIR / "jobs.json"
+PROGRESS_PREFIX = "[VDH-Lite] Progress|"
+FINAL_PATH_PREFIX = "[VDH-Lite] FinalPath|"
+FORMAT_PREFIX = "[VDH-Lite] Format|"
+PROGRESS_TEMPLATE = (
+    "download:"
+    "[VDH-Lite] Progress|"
+    "%(progress.status|)s|"
+    "%(progress.percent|)s|"
+    "%(progress._percent_str|)s|"
+    "%(progress.speed|)s|"
+    "%(progress.eta|)s|"
+    "%(progress.downloaded_bytes|)s|"
+    "%(progress.total_bytes|)s|"
+    "%(progress.total_bytes_estimate|)s|"
+    "%(progress.fragment_index|)s|"
+    "%(progress.fragment_count|)s"
+)
 
 
 def log(message):
@@ -256,13 +273,153 @@ def elapsed_text(started_at, finished_at=None):
     return f"{minutes}:{seconds:02d}"
 
 
+def parse_number(value):
+    text = str(value or "").strip()
+    if not text or text.lower() in {"none", "na", "null", "unknown"}:
+        return None
+    match = re.search(r"-?\d+(?:\.\d+)?", text.replace(",", ""))
+    if not match:
+        return None
+    try:
+        return float(match.group(0))
+    except ValueError:
+        return None
+
+
+def parse_int(value):
+    number = parse_number(value)
+    if number is None:
+        return None
+    return int(number)
+
+
+def parse_percent(value):
+    number = parse_number(value)
+    if number is None:
+        return None
+    return max(0, min(100, round(number, 1)))
+
+
+def seconds_text(value):
+    seconds = parse_int(value)
+    if seconds is None:
+        return None
+    minutes, seconds = divmod(max(0, seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes}:{seconds:02d}"
+
+
+def speed_text(speed_bytes):
+    if speed_bytes is None or speed_bytes <= 0:
+        return None
+    return f"{speed_bytes / (1024 ** 2):.2f} MB/s"
+
+
+def clean_template_value(value):
+    text = str(value or "").strip()
+    if not text or text.lower() in {"none", "na", "null"}:
+        return None
+    return text
+
+
+def phase_from_status(status):
+    normalized = str(status or "").strip().lower()
+    if normalized in {"downloading"}:
+        return "downloading"
+    if normalized in {"finished"}:
+        return "finalizing"
+    if normalized in {"error"}:
+        return "failed"
+    return None
+
+
+def phase_from_output_line(line):
+    lowered = line.lower()
+    if line.startswith(FINAL_PATH_PREFIX):
+        return "finalizing"
+    if "merging formats" in lowered or "[merger]" in lowered:
+        return "merging"
+    if "remux" in lowered or "[videoremuxer]" in lowered:
+        return "remuxing"
+    if "re-encoding" in lowered or "reencoding" in lowered or "[videoconvertor]" in lowered:
+        return "reencoding"
+    if "[extractaudio]" in lowered or "destination:" in lowered and "audio" in lowered:
+        return "reencoding"
+    if "[movefiles]" in lowered or "deleting original file" in lowered:
+        return "finalizing"
+    if "[metadata]" in lowered or "[embedthumbnail]" in lowered or "[ffmpeg]" in lowered:
+        return "finalizing"
+    if line.startswith("[download] Destination:"):
+        return "initializing"
+    if line.startswith("[download]"):
+        return "downloading"
+    return None
+
+
+def parse_structured_progress(line):
+    if not line.startswith(PROGRESS_PREFIX):
+        return None
+
+    fields = line[len(PROGRESS_PREFIX):].split("|")
+    fields.extend([""] * (10 - len(fields)))
+    (
+        raw_status,
+        raw_percent,
+        raw_percent_text,
+        raw_speed,
+        raw_eta,
+        raw_downloaded,
+        raw_total,
+        raw_total_estimate,
+        raw_fragment_index,
+        raw_fragment_count,
+    ) = fields[:10]
+
+    status = clean_template_value(raw_status)
+    percent = parse_percent(raw_percent)
+    if percent is None:
+        percent = parse_percent(raw_percent_text)
+    if status == "finished" and percent is None:
+        percent = 100
+
+    speed_bytes = parse_number(raw_speed)
+    eta_seconds = parse_int(raw_eta)
+
+    return {
+        "progressStatus": status,
+        "phase": phase_from_status(status),
+        "percent": percent,
+        "speedBytes": speed_bytes,
+        "speedText": speed_text(speed_bytes),
+        "etaSeconds": eta_seconds,
+        "etaText": seconds_text(eta_seconds),
+        "downloadedBytes": parse_int(raw_downloaded),
+        "totalBytes": parse_int(raw_total),
+        "totalBytesEstimate": parse_int(raw_total_estimate),
+        "currentFragment": parse_int(raw_fragment_index),
+        "totalFragments": parse_int(raw_fragment_count),
+    }
+
+
 def parse_progress(job):
-    current = None
-    total = None
-    overallPercent = None
-    etaText = None
-    speedText = None
-    speedBytes = None
+    progress_info = {
+        "currentFragment": None,
+        "totalFragments": None,
+        "percent": None,
+        "speedText": None,
+        "speedBytes": None,
+        "etaText": None,
+        "etaSeconds": None,
+        "phase": job.get("phase"),
+        "progressStatus": None,
+        "downloadedBytes": None,
+        "totalBytes": None,
+        "totalBytesEstimate": None,
+        "finalPath": job.get("finalPath"),
+        "formatId": job.get("formatId"),
+    }
     progress_path = Path(job.get("progressPath", ""))
     exit_path = Path(job.get("exitPath", ""))
     download_dir = Path(job.get("downloadDir", ""))
@@ -276,14 +433,34 @@ def parse_progress(job):
     if progress_path.exists():
         try:
             lines = progress_path.read_text(encoding="utf-8", errors="replace").splitlines()
-            for line in lines[-120:]:
+            for line in lines[-200:]:
+                structured = parse_structured_progress(line)
+                if structured:
+                    for key, value in structured.items():
+                        if value is not None:
+                            progress_info[key] = value
+                    continue
+
+                if line.startswith(FINAL_PATH_PREFIX):
+                    progress_info["finalPath"] = clean_template_value(line[len(FINAL_PATH_PREFIX):])
+                    progress_info["phase"] = "finalizing"
+                    continue
+
+                if line.startswith(FORMAT_PREFIX):
+                    progress_info["formatId"] = clean_template_value(line[len(FORMAT_PREFIX):])
+                    continue
+
+                phase = phase_from_output_line(line)
+                if phase:
+                    progress_info["phase"] = phase
+
                 match = re.search(r"Total fragments:\s*(\d+)", line)
                 if match:
-                    total = int(match.group(1))
+                    progress_info["totalFragments"] = int(match.group(1))
                 match = re.search(r"\(frag\s+(\d+)/(\d+)\)", line)
                 if match:
-                    current = int(match.group(1))
-                    total = int(match.group(2))
+                    progress_info["currentFragment"] = int(match.group(1))
+                    progress_info["totalFragments"] = int(match.group(2))
                 match = re.search(r"\[download\].*?at\s+([0-9.]+)([KMG]i?B)/s", line)
                 if match:
                     value = float(match.group(1))
@@ -296,19 +473,19 @@ def parse_progress(job):
                         "MB": 1000 ** 2,
                         "GB": 1000 ** 3,
                     }.get(unit, 1)
-                    speedBytes = value * multiplier
-                    speedText = f"{speedBytes / (1024 ** 2):.2f} MB/s"
+                    progress_info["speedBytes"] = value * multiplier
+                    progress_info["speedText"] = speed_text(progress_info["speedBytes"])
                 if "ERROR:" in line:
                     job["lastError"] = line.strip()
                 eta_match = re.search(r"\bETA\s+([0-9:]+|Unknown)", line)
                 if eta_match:
-                    etaText = eta_match.group(1)
+                    progress_info["etaText"] = eta_match.group(1)
                 match = re.search(r"\[download\]\s+([0-9.]+)%.*?at\s+([0-9.]+)([KMG]i?B)/s(?:\s+ETA\s+([0-9:]+|Unknown))?", line)
                 if match:
-                    overallPercent = float(match.group(1))
+                    progress_info["percent"] = parse_percent(match.group(1))
                     value = float(match.group(2))
                     unit = match.group(3)
-                    etaText = match.group(4) or etaText
+                    progress_info["etaText"] = match.group(4) or progress_info["etaText"]
                     multiplier = {
                         "KiB": 1024,
                         "MiB": 1024 ** 2,
@@ -317,8 +494,8 @@ def parse_progress(job):
                         "MB": 1000 ** 2,
                         "GB": 1000 ** 3,
                     }.get(unit, 1)
-                    speedBytes = value * multiplier
-                    speedText = f"{speedBytes / (1024 ** 2):.2f} MB/s"
+                    progress_info["speedBytes"] = value * multiplier
+                    progress_info["speedText"] = speed_text(progress_info["speedBytes"])
         except Exception:
             pass
 
@@ -328,17 +505,17 @@ def parse_progress(job):
             state = json.loads(ytdl_files[0].read_text(encoding="utf-8"))
             index = state.get("downloader", {}).get("current_fragment", {}).get("index")
             if isinstance(index, int):
-                current = index
+                progress_info["currentFragment"] = index
     except Exception:
         pass
 
-    percent = None
-    if overallPercent is not None:
-        percent = max(0, min(100, round(overallPercent, 1)))
-    elif current is not None and total:
-        percent = max(0, min(100, round(current * 100 / total, 1)))
+    if progress_info["percent"] is None and progress_info["currentFragment"] is not None and progress_info["totalFragments"]:
+        progress_info["percent"] = max(
+            0,
+            min(100, round(progress_info["currentFragment"] * 100 / progress_info["totalFragments"], 1)),
+        )
 
-    return current, total, percent, speedText, speedBytes, etaText
+    return progress_info
 
 
 def get_status():
@@ -346,26 +523,51 @@ def get_status():
     changed = False
     for job in jobs:
         running = is_process_running(job.get("pid"))
-        current, total, percent, speedText, speedBytes, etaText = parse_progress(job)
+        persisted_before = {
+            key: job.get(key)
+            for key in ["exitCode", "finalPath", "formatId", "lastError"]
+        }
+        progress = parse_progress(job)
         job["running"] = running
-        job["currentFragment"] = current
-        job["totalFragments"] = total
-        job["percent"] = percent
-        job["speedText"] = speedText
-        job["speedBytes"] = speedBytes
-        job["etaText"] = etaText if running else None
+        job["currentFragment"] = progress["currentFragment"]
+        job["totalFragments"] = progress["totalFragments"]
+        job["percent"] = progress["percent"]
+        job["speedText"] = progress["speedText"]
+        job["speedBytes"] = progress["speedBytes"]
+        job["etaText"] = progress["etaText"] if running else None
+        job["etaSeconds"] = progress["etaSeconds"] if running else None
+        job["downloadedBytes"] = progress["downloadedBytes"]
+        job["totalBytes"] = progress["totalBytes"]
+        job["totalBytesEstimate"] = progress["totalBytesEstimate"]
+        job["phase"] = progress["phase"] or ("initializing" if running else job.get("phase"))
+        job["progressStatus"] = progress["progressStatus"]
+        if progress["finalPath"]:
+            job["finalPath"] = progress["finalPath"]
+        if progress["formatId"]:
+            job["formatId"] = progress["formatId"]
         job["elapsedText"] = elapsed_text(job.get("startedAt"), job.get("finishedAt"))
         if not running and job.get("status") == "running":
             exit_code = job.get("exitCode")
             if exit_code is None:
                 job["status"] = "unknown"
+                job["phase"] = "unknown"
             elif exit_code == 0:
                 job["status"] = "finished"
                 job["percent"] = job["percent"] if job["percent"] is not None else 100
+                job["phase"] = "finished"
             else:
                 job["status"] = "failed"
+                job["phase"] = "failed"
             job["finishedAt"] = datetime.now().isoformat(timespec="seconds")
             job["elapsedText"] = elapsed_text(job.get("startedAt"), job.get("finishedAt"))
+            changed = True
+        elif job.get("status") == "finished":
+            job["phase"] = "finished"
+            job["percent"] = job["percent"] if job["percent"] is not None else 100
+        elif job.get("status") == "failed":
+            job["phase"] = "failed"
+
+        if any(job.get(key) != value for key, value in persisted_before.items()):
             changed = True
     if changed:
         write_jobs(jobs)
@@ -432,7 +634,17 @@ def start_download(message):
 
     command = [
         "yt-dlp",
+        "--progress",
         "--newline",
+        "--no-color",
+        "--progress-delta",
+        "1",
+        "--progress-template",
+        PROGRESS_TEMPLATE,
+        "--print",
+        "after_move:[VDH-Lite] FinalPath|%(filepath|)s",
+        "--print",
+        "after_move:[VDH-Lite] Format|%(format_id|)s",
         "-P",
         str(download_dir),
         "-o",
@@ -479,11 +691,14 @@ def start_download(message):
         "id": job_id,
         "pid": process.pid,
         "status": "running",
+        "phase": "initializing",
         "title": title,
         "host": sanitize_component(message.get("host"), "site"),
         "quality": sanitize_component(message.get("quality"), ""),
         "url": url,
         "downloadDir": str(download_dir),
+        "finalPath": None,
+        "formatId": None,
         "progressPath": str(progress_path),
         "exitPath": str(exit_path),
         "specPath": str(spec_path),

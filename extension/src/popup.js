@@ -389,8 +389,10 @@ function showCandidateDetails(group, job) {
       "",
       "Job:",
       `- Status: ${job.status || "unknown"}`,
+      `- Phase: ${job.phase || "unknown"}`,
       `- Quality: ${job.quality || "unknown"}`,
       `- Percent: ${job.percent ?? "unknown"}`,
+      `- Final path: ${job.finalPath || "unknown"}`,
       `- Error: ${job.lastError || "none"}`
     );
   }
@@ -677,6 +679,13 @@ function renderJobs(jobs) {
       elapsedBadge.className = "badge neutral";
       elapsedBadge.textContent = `Done in ${job.elapsedText}`;
       meta.append(elapsedBadge);
+    }
+    if (job.finalPath) {
+      const pathText = document.createElement("span");
+      pathText.className = "job-path";
+      pathText.textContent = `Saved: ${job.finalPath}`;
+      pathText.title = job.finalPath;
+      meta.append(pathText);
     }
     if (job.lastError) {
       const errorText = document.createElement("span");

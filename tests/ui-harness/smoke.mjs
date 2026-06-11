@@ -36,6 +36,10 @@ try {
   await page.goto(`${baseUrl}?scenario=empty`);
   await page.waitForSelector(".empty-state");
   assert.match(await page.locator("#media-summary").innerText(), /No candidates found/);
+
+  await page.goto(`${baseUrl}?scenario=finished`);
+  await page.waitForSelector(".job-path");
+  assert.match(await page.locator(".job-path").innerText(), /Saved:/);
 } finally {
   await browser.close();
   server.close();
