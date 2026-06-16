@@ -1,5 +1,6 @@
 (function () {
   try {
+    var vdhMaxSeenUrls = 500;
     var vdhSelector = [
       "video[src]",
       "audio[src]",
@@ -12,14 +13,21 @@
       "a[href$='.m4a']"
     ].join(",");
 
-    var vdhMediaPattern = /\.(m3u8|mpd|mp4|webm|m4a|mp3|mov|ts)(\?|#|$)/i;
+    var vdhMediaPattern = /\.(m3u8|mpd|mp4|webm|m4a|mp3|mov)(\?|#|$)/i;
+    var vdhSeenUrls = globalThis.__vdhLiteSeenUrls || new Set();
+    var vdhPendingMutations = [];
+    var vdhScanScheduled = false;
+    var vdhNeedsFullScan = false;
+    var vdhLastResourceIndex = globalThis.__vdhLiteLastResourceIndex || 0;
+    globalThis.__vdhLiteSeenUrls = vdhSeenUrls;
 
-    var vdhIsDownloadableUrl = function (url) {
+    var vdhNormalizeDownloadableUrl = function (url) {
       try {
         var parsed = new URL(url, location.href);
-        return parsed.protocol === "http:" || parsed.protocol === "https:";
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+        return parsed.href;
       } catch (error) {
-        return false;
+        return null;
       }
     };
 
@@ -27,10 +35,16 @@
       if (!source) source = "dom";
       if (!url) return;
       if (String(url).toLowerCase().indexOf("preview") !== -1) return;
-      if (!vdhIsDownloadableUrl(url)) return;
+      var normalizedUrl = vdhNormalizeDownloadableUrl(url);
+      if (!normalizedUrl) return;
+      if (vdhSeenUrls.has(normalizedUrl)) return;
+      vdhSeenUrls.add(normalizedUrl);
+      if (vdhSeenUrls.size > vdhMaxSeenUrls) {
+        vdhSeenUrls.delete(vdhSeenUrls.values().next().value);
+      }
       try {
         if (!chrome || !chrome.runtime || !chrome.runtime.id) return;
-        chrome.runtime.sendMessage({ type: "content-media-candidate", url: url, source: source }, function () {
+        chrome.runtime.sendMessage({ type: "content-media-candidate", url: normalizedUrl, source: source }, function () {
           try {
             // Reading lastError marks expected disconnect/reload errors as handled.
             var ignored = chrome.runtime.lastError;
@@ -43,24 +57,48 @@
       }
     };
 
-    var vdhScanDom = function () {
+    var vdhReportElement = function (element) {
+      if (!element) return;
+      vdhReport(element.currentSrc || element.src || element.href, "dom");
+    };
+
+    var vdhScanNode = function (node) {
       try {
-        var elements = document.querySelectorAll(vdhSelector);
+        if (!node || node.nodeType !== 1) return;
+        if (node.matches && node.matches(vdhSelector)) vdhReportElement(node);
+        if (!node.querySelectorAll) return;
+        var elements = node.querySelectorAll(vdhSelector);
         for (var i = 0; i < elements.length; i++) {
-          var element = elements[i];
-          vdhReport(element.currentSrc || element.src || element.href, "dom");
+          vdhReportElement(elements[i]);
         }
       } catch (error) {
         // Ignore transient DOM access errors during navigation.
       }
     };
 
+    var vdhScanDom = function () {
+      try {
+        var elements = document.querySelectorAll(vdhSelector);
+        for (var i = 0; i < elements.length; i++) {
+          vdhReportElement(elements[i]);
+        }
+      } catch (error) {
+        // Ignore transient DOM access errors during navigation.
+      }
+    };
+
+    var vdhReportPerformanceEntry = function (entry) {
+      if (entry && vdhMediaPattern.test(entry.name)) vdhReport(entry.name, "performance");
+    };
+
     var vdhScanPerformance = function () {
       try {
         var entries = performance.getEntriesByType("resource");
-        for (var i = 0; i < entries.length; i++) {
-          if (vdhMediaPattern.test(entries[i].name)) vdhReport(entries[i].name, "performance");
+        for (var i = vdhLastResourceIndex; i < entries.length; i++) {
+          vdhReportPerformanceEntry(entries[i]);
         }
+        vdhLastResourceIndex = entries.length;
+        globalThis.__vdhLiteLastResourceIndex = vdhLastResourceIndex;
       } catch (error) {
         // Ignore transient performance API errors.
       }
@@ -69,6 +107,65 @@
     var vdhScanAll = function () {
       vdhScanDom();
       vdhScanPerformance();
+    };
+
+    var vdhScanMutations = function (mutations) {
+      for (var i = 0; i < mutations.length; i++) {
+        var mutation = mutations[i];
+        if (mutation.type === "attributes") {
+          vdhScanNode(mutation.target);
+          continue;
+        }
+        for (var j = 0; j < mutation.addedNodes.length; j++) {
+          vdhScanNode(mutation.addedNodes[j]);
+        }
+      }
+    };
+
+    var vdhRunScheduledScan = function () {
+      vdhScanScheduled = false;
+      var mutations = vdhPendingMutations.splice(0);
+      var needsFullScan = vdhNeedsFullScan;
+      vdhNeedsFullScan = false;
+      if (needsFullScan) {
+        vdhScanAll();
+        return;
+      }
+      vdhScanMutations(mutations);
+      vdhScanPerformance();
+    };
+
+    var vdhScheduleScan = function (mutations, fullScan) {
+      if (fullScan) vdhNeedsFullScan = true;
+      if (mutations && mutations.length) {
+        for (var i = 0; i < mutations.length; i++) vdhPendingMutations.push(mutations[i]);
+      }
+      if (vdhScanScheduled) return;
+      vdhScanScheduled = true;
+      setTimeout(function () {
+        if (typeof requestIdleCallback === "function") {
+          requestIdleCallback(vdhRunScheduledScan, { timeout: 1000 });
+        } else {
+          vdhRunScheduledScan();
+        }
+      }, 250);
+    };
+
+    var vdhInstallPerformanceObserver = function () {
+      try {
+        if (globalThis.__vdhLitePerformanceObserverInstalled) return;
+        if (typeof PerformanceObserver !== "function") return;
+        globalThis.__vdhLitePerformanceObserverInstalled = true;
+        var observer = new PerformanceObserver(function (list) {
+          var entries = list.getEntries();
+          for (var i = 0; i < entries.length; i++) {
+            vdhReportPerformanceEntry(entries[i]);
+          }
+        });
+        observer.observe({ entryTypes: ["resource"] });
+      } catch (error) {
+        // PerformanceObserver may be unavailable or blocked on some documents.
+      }
     };
 
     var vdhInstallBridge = function () {
@@ -90,18 +187,21 @@
     };
 
     if (globalThis.__vdhLiteContentInstalled) {
-      vdhScanAll();
+      vdhScheduleScan(null, true);
       return;
     }
 
     globalThis.__vdhLiteContentInstalled = true;
-    vdhScanAll();
+    vdhScheduleScan(null, true);
+    vdhInstallPerformanceObserver();
     vdhInstallBridge();
 
     try {
       var root = document.documentElement || document.body;
       if (root) {
-        new MutationObserver(vdhScanAll).observe(root, {
+        new MutationObserver(function (mutations) {
+          vdhScheduleScan(mutations, false);
+        }).observe(root, {
           childList: true,
           subtree: true,
           attributes: true,

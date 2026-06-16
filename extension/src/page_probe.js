@@ -2,7 +2,7 @@
   if (window.__vdhLitePageProbeInstalled) return;
   window.__vdhLitePageProbeInstalled = true;
 
-  const MEDIA_URL_PATTERN = /\.(m3u8|mpd|mp4|webm|m4a|mp3|mov|ts)(\?|#|$)/i;
+  const MEDIA_URL_PATTERN = /\.(m3u8|mpd|mp4|webm|m4a|mp3|mov)(\?|#|$)/i;
 
   function post(url, kind) {
     if (typeof url !== "string" || !MEDIA_URL_PATTERN.test(url)) return;

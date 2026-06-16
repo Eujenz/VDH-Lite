@@ -1,5 +1,5 @@
 const MEDIA_TYPES = new Set(["media", "xmlhttprequest", "other"]);
-const EXTENSIONS = /\.(m3u8|mpd|mp4|webm|m4a|mp3|mov|ts)(\?|#|$)/i;
+const EXTENSIONS = /\.(m3u8|mpd|mp4|webm|m4a|mp3|mov)(\?|#|$)/i;
 const DOWNLOADABLE_PROTOCOLS = new Set(["http:", "https:"]);
 const MAX_ITEMS_PER_TAB = 80;
 const PLAYLIST_FETCH_LIMIT = 1024 * 1024;
@@ -116,6 +116,10 @@ function headersForDownload(requestHeaders = []) {
     if (FORWARDED_HEADER_NAMES.has(name) && value) headers[name] = value;
   }
   return headers;
+}
+
+function shouldRememberRequestHeaders(url) {
+  return EXTENSIONS.test(url);
 }
 
 function rememberRequestHeaders(url, headers) {
@@ -240,7 +244,7 @@ chrome.webRequest.onResponseStarted.addListener(
 chrome.webRequest.onBeforeSendHeaders.addListener(
   (details) => {
     const url = normalizeUrl(details.url);
-    if (!url) return;
+    if (!url || !shouldRememberRequestHeaders(url)) return;
     rememberRequestHeaders(url, headersForDownload(details.requestHeaders || []));
   },
   { urls: ["http://*/*", "https://*/*"], types: [...MEDIA_TYPES] },

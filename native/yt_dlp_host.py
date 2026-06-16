@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 HOST_VERSION = "1.0.0"
 DEFAULT_DOWNLOAD_DIR = Path.home() / "Downloads" / "VDH Lite"
+TEMP_DOWNLOAD_DIR_NAME = "_vdh_lite_temp"
 LOG_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "VDH Lite"
 LOG_FILE = LOG_DIR / "yt-dlp-host.log"
 JOBS_FILE = LOG_DIR / "jobs.json"
@@ -183,6 +184,12 @@ def sanitize_component(value, fallback):
 
 def resolve_download_dir(value):
     path = Path(os.path.expandvars(os.path.expanduser(str(value)))) if value else DEFAULT_DOWNLOAD_DIR
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def resolve_temp_download_dir(download_dir):
+    path = download_dir / TEMP_DOWNLOAD_DIR_NAME
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -1181,6 +1188,7 @@ def build_download_command(message):
         raise ValueError("Invalid URL")
 
     download_dir = resolve_download_dir(message.get("downloadDir"))
+    temp_download_dir = resolve_temp_download_dir(download_dir)
     title = sanitize_component(message.get("title"), "video")
     referer = message.get("referer") or message.get("originUrl")
     user_agent = message.get("userAgent")
@@ -1209,7 +1217,9 @@ def build_download_command(message):
         "--print",
         "after_move:[VDH-Lite] Duration|%(duration|)s",
         "-P",
-        str(download_dir),
+        f"home:{download_dir}",
+        "-P",
+        f"temp:{temp_download_dir}",
         "-o",
         output_template,
     ]
@@ -1230,6 +1240,7 @@ def build_download_command(message):
     return {
         "command": command,
         "downloadDir": str(download_dir),
+        "tempDownloadDir": str(temp_download_dir),
         "title": title,
         "host": sanitize_component(message.get("host"), "site"),
         "quality": sanitize_component(message.get("quality"), ""),
@@ -1269,6 +1280,7 @@ def new_download_job(message, retry_of=None):
         "fragmentRetries": prepared["fragmentRetries"],
         "url": prepared["url"],
         "downloadDir": prepared["downloadDir"],
+        "tempDownloadDir": prepared["tempDownloadDir"],
         "finalPath": None,
         "formatId": None,
         "progressPath": None,
@@ -1329,6 +1341,7 @@ def launch_job(job):
         "fragmentRetries": prepared["fragmentRetries"],
         "url": prepared["url"],
         "downloadDir": prepared["downloadDir"],
+        "tempDownloadDir": prepared["tempDownloadDir"],
         "progressPath": str(progress_path),
         "exitPath": str(exit_path),
         "specPath": str(spec_path),
@@ -1580,6 +1593,7 @@ def start_download(message):
         "phase": job.get("phase"),
         "queued": job.get("status") == "queued",
         "downloadDir": job.get("downloadDir"),
+        "tempDownloadDir": job.get("tempDownloadDir"),
         "progressPath": job.get("progressPath"),
         "exitPath": job.get("exitPath"),
         "specPath": job.get("specPath"),
