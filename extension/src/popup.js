@@ -736,7 +736,9 @@ function formatChoicesFromFormats(formats) {
 }
 
 function preferredDiscoveryUrl(group, item, tab) {
-  return [group.pageUrl, item?.originUrl, tab?.url, item?.url].find(isHttpUrl) || item?.url || "";
+  const directMediaUrl = [item?.url, group.sourceUrl]
+    .find((url) => isHttpUrl(url) && /\.(?:m3u8|mpd)(?:[?#]|$)/i.test(url));
+  return [directMediaUrl, group.pageUrl, item?.originUrl, tab?.url, item?.url].find(isHttpUrl) || item?.url || "";
 }
 
 function itemForDiscoveredDownload(group, media, discovery) {

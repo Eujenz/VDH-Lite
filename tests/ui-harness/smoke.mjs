@@ -44,7 +44,7 @@ try {
   assert.match(await page.locator(".media-card").first().locator(".media-title strong").innerText(), /\(yt-dlp\)/);
   assert.match(await page.locator(".media-card").first().locator(".badge.success").innerText(), /yt-dlp/);
   const discoveredDataset = await page.evaluate(() => ({ ...document.documentElement.dataset }));
-  assert.equal(discoveredDataset.harnessLastDiscoveryUrl, "https://watch.example.test/videos/sample-cooking-stream");
+  assert.equal(discoveredDataset.harnessLastDiscoveryUrl, "https://cdn.example.test/hls/sample-cooking-stream/1080p/master.m3u8?token=abc");
 
   await page.locator(".media-card").first().locator("button", { hasText: "Download" }).click();
   await page.waitForFunction(() => document.documentElement.dataset.harnessLastDownloadFormatSelector === "bv*+ba/b");
