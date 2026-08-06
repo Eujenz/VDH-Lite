@@ -173,6 +173,8 @@ const I18N = {
     "deps.ytMissing": "yt-dlp missing",
     "deps.ffmpegOk": "FFmpeg OK",
     "deps.ffmpegMissing": "FFmpeg missing",
+    "deps.impersonationOk": "Impersonation OK",
+    "deps.impersonationMissing": "Impersonation missing",
     "deps.installing": "Installing missing dependencies...",
     "deps.installFailed": "Install failed: {error}",
     "details.title": "Title",
@@ -338,6 +340,8 @@ const I18N = {
     "deps.ytMissing": "缺少 yt-dlp",
     "deps.ffmpegOk": "FFmpeg 正常",
     "deps.ffmpegMissing": "缺少 FFmpeg",
+    "deps.impersonationOk": "Impersonation OK",
+    "deps.impersonationMissing": "Impersonation missing",
     "deps.installing": "正在安裝缺少的相依項目...",
     "deps.installFailed": "安裝失敗：{error}",
     "details.title": "標題",
@@ -439,6 +443,12 @@ function dependencySummary(dep) {
   return dep.version || dep.path || "installed";
 }
 
+function impersonationSummary(dep) {
+  if (!dep) return tr("value.unknown");
+  if (dep.available) return dep.source || "available";
+  return dep.error || "missing";
+}
+
 function formatDiagnostics(payload, sourceJob = null) {
   const lines = [
     "VDH Lite Diagnostics",
@@ -462,6 +472,7 @@ function formatDiagnostics(payload, sourceJob = null) {
     "",
     "Dependencies",
     `- yt-dlp: ${dependencySummary(payload.deps?.ytDlp)}`,
+    `- Impersonation: ${impersonationSummary(payload.deps?.impersonation)}`,
     `- FFmpeg: ${dependencySummary(payload.deps?.ffmpeg)}`
   ];
 
@@ -481,6 +492,8 @@ function formatDiagnostics(payload, sourceJob = null) {
         `  Error label: ${valueOrUnknown(job.errorLabel)}`,
         `  Summary: ${valueOrUnknown(job.errorSummary)}`,
         `  Next action: ${valueOrUnknown(job.nextAction)}`,
+        `  Request has cookie: ${job.requestHasCookie === true ? "yes" : job.requestHasCookie === false ? "no" : tr("value.unknown")}`,
+        `  Request headers: ${Array.isArray(job.requestHeaderNames) && job.requestHeaderNames.length ? job.requestHeaderNames.join(", ") : tr("value.unknown")}`,
         `  Last error: ${valueOrUnknown(job.lastError)}`
       );
     }
@@ -540,6 +553,14 @@ function isHttpUrl(url) {
     return ["http:", "https:"].includes(new URL(url).protocol);
   } catch {
     return false;
+  }
+}
+
+function isLikelyHlsSegmentUrl(url) {
+  try {
+    return /\.(ts|m4s)$/i.test(new URL(url).pathname);
+  } catch {
+    return /\.(ts|m4s)(\?|#|$)/i.test(String(url || ""));
   }
 }
 
@@ -744,6 +765,7 @@ function applyDiscoveryToGroup(group) {
 function buildCandidateGroups(items) {
   const groups = new Map();
   for (const item of items) {
+    if (isLikelyHlsSegmentUrl(item?.url)) continue;
     const key = groupKeyForItem(item);
     const info = describeUrl(item.url);
     if (!groups.has(key)) {
@@ -831,6 +853,10 @@ function countGroupsByState(groups) {
     counts[stateForGroup(group)] += 1;
   }
   return counts;
+}
+
+function sourceCountForGroups(groups) {
+  return groups.reduce((total, group) => total + group.items.length, 0);
 }
 
 function renderFilterChips(groups) {
@@ -1151,7 +1177,7 @@ function renderMediaView({ preserveStatus = false } = {}) {
 
   const visibleGroups = currentGroups.filter(filterMatches);
   mediaSummaryEl.textContent = currentGroups.length
-    ? trCount("summary.candidates", currentGroups.length, { sources: currentItems.length })
+    ? trCount("summary.candidates", currentGroups.length, { sources: sourceCountForGroups(currentGroups) })
     : tr("summary.noCandidates");
 
   if (currentGroups.length && !preserveStatus) updateMediaStatus(currentGroups);
@@ -1530,7 +1556,10 @@ function renderJobs(jobs) {
 }
 
 async function refreshJobs() {
-  const response = await chrome.runtime.sendMessage({ type: "native-status" });
+  const response = await chrome.runtime.sendMessage({
+    type: "native-status",
+    concurrencyLimit: concurrencyLimitValue()
+  });
   if (response?.ok) {
     currentJobs = response.jobs || [];
     renderJobs(currentJobs);
@@ -1547,8 +1576,11 @@ function renderDeps(response) {
   }
   const yt = response.ytDlp?.installed ? tr("deps.ytOk") : tr("deps.ytMissing");
   const ff = response.ffmpeg?.installed ? tr("deps.ffmpegOk") : tr("deps.ffmpegMissing");
-  depsStatus.textContent = `${yt} | ${ff}`;
-  const ready = response.ytDlp?.installed && response.ffmpeg?.installed;
+  const impersonationKnown = Boolean(response.impersonation);
+  const impersonationReady = !impersonationKnown || Boolean(response.impersonation?.available);
+  const impersonation = impersonationReady ? tr("deps.impersonationOk") : tr("deps.impersonationMissing");
+  depsStatus.textContent = impersonationKnown ? `${yt} | ${ff} | ${impersonation}` : `${yt} | ${ff}`;
+  const ready = response.ytDlp?.installed && response.ffmpeg?.installed && impersonationReady;
   installDepsButton.hidden = ready;
   installDepsButton.disabled = ready;
   if (ready) {

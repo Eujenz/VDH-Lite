@@ -1,5 +1,6 @@
 const MEDIA_TYPES = new Set(["media", "xmlhttprequest", "other"]);
 const EXTENSIONS = /\.(m3u8|mpd|mp4|webm|m4a|mp3|mov)(\?|#|$)/i;
+const HLS_SEGMENT_EXTENSIONS = /\.(ts|m4s)(\?|#|$)/i;
 const DOWNLOADABLE_PROTOCOLS = new Set(["http:", "https:"]);
 const MAX_ITEMS_PER_TAB = 80;
 const PLAYLIST_FETCH_LIMIT = 1024 * 1024;
@@ -9,7 +10,21 @@ const qualityCache = new Map();
 const pendingQualityFetches = new Set();
 const requestHeaderCache = new Map();
 const nativeHostName = "com.vdhlite.ytdlp";
-const FORWARDED_HEADER_NAMES = new Set(["referer", "origin", "user-agent", "accept", "accept-language", "cookie"]);
+const FORWARDED_HEADER_NAMES = new Set([
+  "referer",
+  "origin",
+  "user-agent",
+  "accept",
+  "accept-language",
+  "cookie",
+  "priority",
+  "sec-ch-ua",
+  "sec-ch-ua-mobile",
+  "sec-ch-ua-platform",
+  "sec-fetch-dest",
+  "sec-fetch-mode",
+  "sec-fetch-site"
+]);
 
 function setActionBadge(tabId, text, color) {
   if (tabId == null || tabId < 0 || !chrome.action?.setBadgeText) return;
@@ -79,8 +94,19 @@ function normalizeUrl(url) {
   }
 }
 
+function isLikelyHlsSegmentUrl(url) {
+  try {
+    const parsed = new URL(url);
+    const pathname = parsed.pathname.toLowerCase();
+    return HLS_SEGMENT_EXTENSIONS.test(pathname);
+  } catch {
+    return HLS_SEGMENT_EXTENSIONS.test(String(url || "").toLowerCase());
+  }
+}
+
 function scoreItem(item) {
   const url = item.url.toLowerCase();
+  if (isLikelyHlsSegmentUrl(url)) return -1;
   if (url.includes("preview")) return -1;
   if (url.includes(".m3u8")) return 100;
   if (url.includes(".mpd")) return 95;
@@ -128,6 +154,80 @@ function rememberRequestHeaders(url, headers) {
     const oldestKey = requestHeaderCache.keys().next().value;
     requestHeaderCache.delete(oldestKey);
   }
+}
+
+function cookieHeaderFromCookies(cookies = []) {
+  const values = new Map();
+  for (const cookie of cookies) {
+    if (!cookie?.name) continue;
+    values.set(cookie.name, cookie.value || "");
+  }
+  return [...values.entries()].map(([name, value]) => `${name}=${value}`).join("; ");
+}
+
+function cookiesForDetails(details) {
+  return new Promise((resolve) => {
+    if (!chrome.cookies?.getAll) {
+      resolve([]);
+      return;
+    }
+    chrome.cookies.getAll(details, (cookies = []) => {
+      if (chrome.runtime.lastError) {
+        resolve([]);
+        return;
+      }
+      resolve(cookies);
+    });
+  });
+}
+
+function siteOrigin(url) {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.protocol}//${parsed.hostname}`;
+  } catch {
+    return "";
+  }
+}
+
+async function cookiesForUrl(url, topLevelUrls = []) {
+  const cookieSets = [await cookiesForDetails({ url })];
+  const topLevelSites = [...new Set(topLevelUrls.map(siteOrigin).filter(Boolean))];
+
+  for (const topLevelSite of topLevelSites) {
+    cookieSets.push(await cookiesForDetails({ url, partitionKey: { topLevelSite } }));
+    cookieSets.push(await cookiesForDetails({ url, partitionKey: { topLevelSite, hasCrossSiteAncestor: true } }));
+  }
+
+  return cookieHeaderFromCookies(cookieSets.flat());
+}
+
+function applyBrowserHeaderDefaults(headers, message) {
+  const sourceSite = siteOrigin(message.originUrl || message.referer || "");
+  const targetSite = siteOrigin(message.url || "");
+  if (sourceSite && targetSite && sourceSite !== targetSite) {
+    headers["sec-fetch-site"] ||= "cross-site";
+  }
+  headers["sec-fetch-mode"] ||= "cors";
+  headers["sec-fetch-dest"] ||= "empty";
+  headers.priority ||= "u=1, i";
+}
+
+async function enrichNativeMediaMessage(message) {
+  const requestHeaders = {
+    ...(requestHeaderCache.get(message.url) || {}),
+    ...(message.requestHeaders || {})
+  };
+  applyBrowserHeaderDefaults(requestHeaders, message);
+  if (!requestHeaders.cookie) {
+    const targetUrl = normalizeUrl(message.url);
+    if (targetUrl) {
+      const cookie = await cookiesForUrl(targetUrl, [message.referer, message.originUrl]);
+      if (cookie) requestHeaders.cookie = cookie;
+    }
+  }
+
+  return { ...message, requestHeaders };
 }
 
 function detectQualityFromContentType(contentType) {
@@ -198,6 +298,7 @@ async function hydrateM3u8Quality(tabId, url, force = false) {
 
 function looksLikeMedia(details) {
   if (!MEDIA_TYPES.has(details.type)) return false;
+  if (isLikelyHlsSegmentUrl(details.url)) return false;
   if (EXTENSIONS.test(details.url)) return true;
 
   const contentType = contentTypeFromHeaders(details.responseHeaders || []);
@@ -213,6 +314,7 @@ function looksLikeMedia(details) {
 function pushMedia(tabId, item) {
   if (tabId < 0) return;
   if (item.url && item.url.toLowerCase().includes("preview")) return;
+  if (isLikelyHlsSegmentUrl(item.url)) return;
   applyCachedQuality(item);
   const current = tabMedia.get(tabId) || [];
   if (current.some((existing) => existing.url === item.url)) return;
@@ -323,37 +425,44 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === "native-download" && typeof message.url === "string") {
-    chrome.runtime.sendNativeMessage(nativeHostName, { ...message, type: "download" }, (response) => {
-      if (chrome.runtime.lastError) {
-        sendResponse({ ok: false, error: chrome.runtime.lastError.message });
-        return;
-      }
-      sendResponse(response || { ok: false, error: "Native host returned no response" });
+    enrichNativeMediaMessage(message).then((enriched) => {
+      chrome.runtime.sendNativeMessage(nativeHostName, { ...enriched, type: "download" }, (response) => {
+        if (chrome.runtime.lastError) {
+          sendResponse({ ok: false, error: chrome.runtime.lastError.message });
+          return;
+        }
+        sendResponse(response || { ok: false, error: "Native host returned no response" });
+      });
     });
     return true;
   }
 
   if (message?.type === "native-discover" && typeof message.url === "string") {
-    chrome.runtime.sendNativeMessage(nativeHostName, { ...message, type: "discover" }, (response) => {
-      if (chrome.runtime.lastError) {
-        sendResponse({
-          ok: false,
-          error: chrome.runtime.lastError.message,
-          category: "binary-missing",
-          label: "Native host not connected",
-          summary: "Chrome could not connect to the VDH Lite native host.",
-          nextAction: "Run install.bat, restart Chrome, then test the native host again.",
-          retryable: true
-        });
-        return;
-      }
-      sendResponse(response || { ok: false, error: "Native host returned no response" });
+    enrichNativeMediaMessage(message).then((enriched) => {
+      chrome.runtime.sendNativeMessage(nativeHostName, { ...enriched, type: "discover" }, (response) => {
+        if (chrome.runtime.lastError) {
+          sendResponse({
+            ok: false,
+            error: chrome.runtime.lastError.message,
+            category: "binary-missing",
+            label: "Native host not connected",
+            summary: "Chrome could not connect to the VDH Lite native host.",
+            nextAction: "Run install.bat, restart Chrome, then test the native host again.",
+            retryable: true
+          });
+          return;
+        }
+        sendResponse(response || { ok: false, error: "Native host returned no response" });
+      });
     });
     return true;
   }
 
   if (message?.type === "native-status") {
-    chrome.runtime.sendNativeMessage(nativeHostName, { type: "status" }, (response) => {
+    chrome.runtime.sendNativeMessage(nativeHostName, {
+      type: "status",
+      concurrencyLimit: message.concurrencyLimit
+    }, (response) => {
       if (chrome.runtime.lastError) {
         sendResponse({ ok: false, error: chrome.runtime.lastError.message });
         return;

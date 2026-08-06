@@ -19,7 +19,10 @@ powershell @installArgs
 Write-Host "Checking yt-dlp..."
 if (-not (Get-Command yt-dlp -ErrorAction SilentlyContinue)) {
   Write-Host "Installing yt-dlp with pip..."
-  python -m pip install --user -U yt-dlp
+  python -m pip install --user -U "yt-dlp[default,curl-cffi]"
+} else {
+  Write-Host "Ensuring yt-dlp impersonation support..."
+  python -m pip install --user -U "yt-dlp[default,curl-cffi]"
 }
 
 Write-Host "Checking FFmpeg..."

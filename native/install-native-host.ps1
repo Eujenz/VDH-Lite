@@ -10,6 +10,7 @@ $ErrorActionPreference = "Stop"
 $nativeDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $nativeDir
 $extensionManifestPath = Join-Path $repoRoot "extension\manifest.json"
+$extensionIdsPath = Join-Path $nativeDir "extension-ids.json"
 $runtimeManifestPath = Join-Path $InstallRoot "com.vdhlite.ytdlp.json"
 $runtimeCmdPath = Join-Path $InstallRoot "com.vdhlite.ytdlp.cmd"
 $pythonPath = (Get-Command python -ErrorAction Stop).Source
@@ -29,7 +30,7 @@ function Get-ChromeExtensionIdFromKey($base64Key) {
 
 function Get-ExtensionIdsFromManifest($path) {
   if (-not (Test-Path $path)) {
-    throw "Extension manifest not found: $path"
+    return @()
   }
 
   $manifest = Get-Content -Raw -Path $path | ConvertFrom-Json
@@ -37,11 +38,24 @@ function Get-ExtensionIdsFromManifest($path) {
     return @(Get-ChromeExtensionIdFromKey $manifest.key)
   }
 
-  throw "No manifest key found. Pass -ExtensionIds with the published extension ID."
+  return @()
+}
+
+function Get-ConfiguredExtensionIds($path) {
+  if (-not (Test-Path $path)) {
+    return @()
+  }
+  $config = Get-Content -Raw -Path $path | ConvertFrom-Json
+  return @($config.development) + @($config.published)
 }
 
 if ($ExtensionIds.Count -eq 0) {
-  $ExtensionIds = Get-ExtensionIdsFromManifest $extensionManifestPath
+  $ExtensionIds = @(Get-ConfiguredExtensionIds $extensionIdsPath)
+  $ExtensionIds += @(Get-ExtensionIdsFromManifest $extensionManifestPath)
+}
+$ExtensionIds = @($ExtensionIds | Where-Object { $_ -match '^[a-p]{32}$' } | Sort-Object -Unique)
+if ($ExtensionIds.Count -eq 0) {
+  throw "No valid extension IDs are configured. Update native\extension-ids.json or pass -ExtensionIds."
 }
 
 New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null

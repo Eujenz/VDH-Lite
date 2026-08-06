@@ -8,16 +8,26 @@ import threading
 import time
 import shutil
 import winreg
+import ctypes
+import ctypes.wintypes
+import msvcrt
+import tempfile
+from contextlib import contextmanager
 from datetime import datetime
+from functools import wraps
+from importlib.util import find_spec
 from pathlib import Path
 from urllib.parse import urlparse
 
-HOST_VERSION = "1.0.0"
+HOST_VERSION = "1.1.0"
+YTDLP_PIP_PACKAGE = "yt-dlp[default,curl-cffi]"
 DEFAULT_DOWNLOAD_DIR = Path.home() / "Downloads" / "VDH Lite"
 TEMP_DOWNLOAD_DIR_NAME = "_vdh_lite_temp"
 LOG_DIR = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "VDH Lite"
 LOG_FILE = LOG_DIR / "yt-dlp-host.log"
 JOBS_FILE = LOG_DIR / "jobs.json"
+JOBS_LOCK_FILE = LOG_DIR / "jobs.lock"
+QUEUE_SETTINGS_FILE = LOG_DIR / "queue-settings.json"
 PROGRESS_PREFIX = "[VDH-Lite] Progress|"
 FINAL_PATH_PREFIX = "[VDH-Lite] FinalPath|"
 FORMAT_PREFIX = "[VDH-Lite] Format|"
@@ -53,8 +63,15 @@ STABLE_YTDLP_ARGS = [
 DEFAULT_CONCURRENCY_LIMIT = 2
 MAX_CONCURRENCY_LIMIT = 4
 JOB_HISTORY_LIMIT = 40
+JOB_AUTH_TTL_SECONDS = 15 * 60
+JOB_LOCK_TIMEOUT_SECONDS = 15
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+PROCESS_START_TOLERANCE_SECONDS = 60
+RUNNER_PROCESS_NAMES = {"python.exe", "pythonw.exe", "py.exe"}
 ACTIVE_JOB_STATUSES = {"queued", "running", "stopping"}
 TERMINAL_JOB_STATUSES = {"finished", "failed", "stopped", "unknown"}
+_JOB_LOCK_STATE = threading.local()
+_PROCESS_JOB_LOCK = threading.RLock()
 ERROR_GUIDANCE = {
     "http-429": {
         "label": "Rate limited",
@@ -67,6 +84,12 @@ ERROR_GUIDANCE = {
         "summary": "The site rejected the request or needs a signed-in browser session.",
         "nextAction": "Open the page in the browser, confirm it plays, then retry. Cookie import will be added in an advanced settings pass.",
         "retryable": False,
+    },
+    "impersonation-required": {
+        "label": "Browser impersonation required",
+        "summary": "The site is behind a Cloudflare or browser-fingerprint challenge that plain yt-dlp requests cannot pass.",
+        "nextAction": "Retry this job with browser impersonation. If VDH Lite reports impersonation support is missing, click Install missing first.",
+        "retryable": True,
     },
     "geo-blocked": {
         "label": "Region blocked",
@@ -273,7 +296,136 @@ def stable_ytdlp_args(fragment_retries=None):
     return args
 
 
+def module_available(name):
+    return find_spec(name) is not None
+
+
+def ytdlp_base_command():
+    if module_available("yt_dlp"):
+        return [sys.executable, "-m", "yt_dlp"]
+    return ["yt-dlp"]
+
+
+def ytdlp_command(*args):
+    return [*ytdlp_base_command(), *args]
+
+
+def ytdlp_command_version():
+    env = effective_env()
+    base_command = ytdlp_base_command()
+    if base_command == ["yt-dlp"]:
+        path = shutil.which("yt-dlp", path=env.get("PATH"))
+        if not path:
+            return {"installed": False, "path": None, "version": None}
+        display_path = path
+    else:
+        spec = find_spec("yt_dlp")
+        display_path = f"{sys.executable} -m yt_dlp"
+        if spec and spec.origin:
+            display_path = f"{display_path} ({spec.origin})"
+
+    try:
+        result = subprocess.run(
+            [*base_command, "--version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=15,
+            env=env,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        first_line = (result.stdout or "").splitlines()[0] if result.stdout else ""
+    except Exception as error:
+        first_line = str(error)
+    return {"installed": True, "path": display_path, "version": first_line}
+
+
+def parse_impersonation_targets(output):
+    targets = []
+    for line in str(output or "").splitlines():
+        lowered = line.lower()
+        if "curl_cffi" not in lowered or "unavailable" in lowered:
+            continue
+        cleaned = re.sub(r"\s+", " ", line.strip())
+        if cleaned and not cleaned.startswith("["):
+            targets.append(cleaned)
+    return targets
+
+
+def ytdlp_impersonation_status():
+    ytdlp = ytdlp_command_version()
+    if not ytdlp["installed"]:
+        return {
+            "available": False,
+            "installed": False,
+            "source": None,
+            "targets": [],
+            "error": "yt-dlp is not installed.",
+        }
+
+    if module_available("yt_dlp") and module_available("curl_cffi"):
+        return {
+            "available": True,
+            "installed": True,
+            "source": "curl_cffi",
+            "targets": [],
+            "error": None,
+        }
+
+    try:
+        result = subprocess.run(
+            ytdlp_command("--no-update", "--list-impersonate-targets"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=20,
+            env=effective_env(),
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except Exception as error:
+        return {
+            "available": False,
+            "installed": False,
+            "source": "curl_cffi",
+            "targets": [],
+            "error": str(error),
+        }
+
+    output = result.stdout or ""
+    targets = parse_impersonation_targets(output)
+    return {
+        "available": bool(targets),
+        "installed": bool(targets),
+        "source": "curl_cffi",
+        "targets": targets[:12],
+        "error": None if targets else "No available impersonation targets. Install yt-dlp with the curl-cffi extra.",
+    }
+
+
+def ytdlp_impersonation_available():
+    if module_available("yt_dlp") and module_available("curl_cffi"):
+        return True
+    return ytdlp_impersonation_status()["available"]
+
+
+def append_generic_impersonation_args(command):
+    if ytdlp_impersonation_available():
+        command.extend(["--impersonate", "chrome", "--extractor-args", "generic:impersonate"])
+
+
+def should_use_impersonation(message):
+    value = message.get("browserImpersonation")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on", "chrome"}
+    return False
+
+
 def command_version(command):
+    if command == "yt-dlp":
+        return ytdlp_command_version()
+
     env = effective_env()
     path = shutil.which(command, path=env.get("PATH"))
     if not path:
@@ -302,6 +454,7 @@ def get_deps():
         "logDir": str(LOG_DIR),
         "defaultDownloadDir": str(DEFAULT_DOWNLOAD_DIR),
         "ytDlp": command_version("yt-dlp"),
+        "impersonation": ytdlp_impersonation_status(),
         "ffmpeg": command_version("ffmpeg"),
         "winget": command_version("winget"),
     }
@@ -354,6 +507,29 @@ def format_has_video(fmt):
 
 def format_has_audio(fmt):
     return str(fmt.get("acodec") or "none").lower() != "none"
+
+
+def video_codec_rank(fmt):
+    codec = str(fmt.get("vcodec") or "").lower().split(".", 1)[0]
+    if codec in {"av01", "av1"}:
+        return 3
+    if codec in {"hev1", "hvc1", "hevc", "h265"}:
+        return 2
+    if codec in {"avc1", "avc", "h264"}:
+        return 1
+    return 0
+
+
+def format_sort_key(fmt):
+    is_video = format_has_video(fmt)
+    return (
+        1 if is_video else 0,
+        fmt.get("tbr") or (fmt.get("abr") if not is_video else 0) or 0,
+        video_codec_rank(fmt) if is_video else 0,
+        fmt.get("height") or 0,
+        fmt.get("width") or 0,
+        fmt.get("fps") or 0,
+    )
 
 
 def format_label(fmt):
@@ -444,10 +620,7 @@ def compact_media_entry(info, fallback_url=None):
 
     compact_formats = sorted(
         compact_formats,
-        key=lambda item: (
-            item.get("height") or 0,
-            item.get("tbr") or item.get("abr") or 0,
-        ),
+        key=format_sort_key,
         reverse=True,
     )[:80]
 
@@ -506,6 +679,14 @@ def classify_error(message, exit_code=None):
         or "not available from your location" in lowered
     ):
         category = "geo-blocked"
+    elif (
+        "cloudflare anti-bot challenge" in lowered
+        or "impersonation dependency" in lowered
+        or "no impersonate target" in lowered
+        or "impersonate target is available" in lowered
+        or "generic:impersonate" in lowered
+    ):
+        category = "impersonation-required"
     elif (
         "login required" in lowered
         or "sign in" in lowered
@@ -598,6 +779,12 @@ def safe_basename(path_value):
 
 def sanitize_job_for_diagnostics(job):
     error = classify_error(job.get("lastError"), job.get("exitCode"))
+    request_headers = (job.get("request") or {}).get("requestHeaders") or {}
+    request_header_names = sorted(str(name).lower() for name in request_headers.keys())
+    request_has_cookie = bool(load_job_auth(job).get("cookie"))
+    if request_has_cookie and "cookie" not in request_header_names:
+        request_header_names.append("cookie")
+        request_header_names.sort()
     return {
         "id": job.get("id"),
         "status": job.get("status"),
@@ -615,20 +802,50 @@ def sanitize_job_for_diagnostics(job):
         "nextAction": error["nextAction"],
         "retryable": error["retryable"],
         "lastError": error["raw"],
+        "requestHasCookie": request_has_cookie,
+        "requestHeaderNames": request_header_names,
     }
 
 
 def public_job(job):
-    return {key: value for key, value in job.items() if key != "request"}
+    return {key: value for key, value in job.items() if key not in {"request", "authPath"}}
+
+
+def visible_jobs(jobs):
+    """Hide an auto-retried failure while its replacement is in history."""
+    job_ids = {job.get("id") for job in jobs}
+    return [
+        job
+        for job in jobs
+        if not job.get("autoRetryJobId") or job.get("autoRetryJobId") not in job_ids
+    ]
+
+
+def projected_status_jobs(jobs, history_limit=8):
+    displayed = visible_jobs(jobs)
+    active = [job for job in displayed if is_active_job(job)]
+    inactive = [job for job in displayed if not is_active_job(job)]
+    inactive_capacity = max(0, history_limit - len(active))
+    selected_inactive_ids = {
+        id(job) for job in (inactive[-inactive_capacity:] if inactive_capacity else [])
+    }
+    projected = [
+        job
+        for job in displayed
+        if is_active_job(job) or id(job) in selected_inactive_ids
+    ]
+    return list(reversed(projected))
 
 
 def get_diagnostics(message=None):
     message = message or {}
-    status = get_status()
-    jobs = status.get("jobs", [])
+    get_status()
+    jobs = list(reversed(read_jobs()))
     job_id = message.get("jobId")
     if job_id:
         jobs = [job for job in jobs if job.get("id") == job_id]
+    else:
+        jobs = list(reversed(visible_jobs(list(reversed(jobs)))))
     return {
         "ok": True,
         "nativeConnected": True,
@@ -663,8 +880,8 @@ def install_deps():
     before = get_deps()
     results = []
 
-    if not before["ytDlp"]["installed"]:
-        results.append(run_install_command([sys.executable, "-m", "pip", "install", "--user", "-U", "yt-dlp"]))
+    if not before["ytDlp"]["installed"] or not before.get("impersonation", {}).get("available"):
+        results.append(run_install_command([sys.executable, "-m", "pip", "install", "--user", "-U", YTDLP_PIP_PACKAGE]))
 
     after_ytdlp = get_deps()
     if not after_ytdlp["ffmpeg"]["installed"]:
@@ -688,11 +905,96 @@ def install_deps():
     return {"ok": True, "results": results, "deps": get_deps()}
 
 
-def read_jobs():
+@contextmanager
+def job_store_lock(timeout=JOB_LOCK_TIMEOUT_SECONDS):
+    with _PROCESS_JOB_LOCK:
+        depth = getattr(_JOB_LOCK_STATE, "depth", 0)
+        if depth:
+            _JOB_LOCK_STATE.depth = depth + 1
+            try:
+                yield
+            finally:
+                _JOB_LOCK_STATE.depth -= 1
+            return
+
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        lock_handle = JOBS_LOCK_FILE.open("a+b")
+        try:
+            lock_handle.seek(0, os.SEEK_END)
+            if lock_handle.tell() == 0:
+                lock_handle.write(b"\0")
+                lock_handle.flush()
+
+            deadline = time.monotonic() + timeout
+            while True:
+                try:
+                    lock_handle.seek(0)
+                    msvcrt.locking(lock_handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("Timed out waiting for the VDH Lite job store lock.")
+                    time.sleep(0.05)
+
+            _JOB_LOCK_STATE.depth = 1
+            try:
+                yield
+            finally:
+                _JOB_LOCK_STATE.depth = 0
+                lock_handle.seek(0)
+                msvcrt.locking(lock_handle.fileno(), msvcrt.LK_UNLCK, 1)
+        finally:
+            lock_handle.close()
+
+
+def job_store_transaction(function):
+    @wraps(function)
+    def locked_function(*args, **kwargs):
+        with job_store_lock():
+            return function(*args, **kwargs)
+    return locked_function
+
+
+def atomic_write_json(path, payload):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = None
     try:
-        return json.loads(JOBS_FILE.read_text(encoding="utf-8"))
-    except Exception:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+    finally:
+        if temp_path and temp_path.exists():
+            try:
+                temp_path.unlink()
+            except Exception:
+                pass
+
+
+def _read_jobs_unlocked():
+    try:
+        payload = json.loads(JOBS_FILE.read_text(encoding="utf-8"))
+    except FileNotFoundError:
         return []
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"Job store is not valid JSON: {error}") from error
+    if not isinstance(payload, list):
+        raise RuntimeError("Job store must contain a JSON array.")
+    return payload
+
+
+def read_jobs():
+    with job_store_lock():
+        return _read_jobs_unlocked()
 
 
 def now_iso():
@@ -713,43 +1015,245 @@ def is_active_job(job):
 
 def cleanup_job_history(jobs):
     if len(jobs) <= JOB_HISTORY_LIMIT:
-        return jobs
-    active = [job for job in jobs if is_active_job(job)]
-    inactive = [job for job in jobs if not is_active_job(job)]
-    keep_inactive = max(0, JOB_HISTORY_LIMIT - len(active))
-    return active + inactive[-keep_inactive:]
+        return list(jobs)
+    active_count = sum(1 for job in jobs if is_active_job(job))
+    keep_inactive = max(0, JOB_HISTORY_LIMIT - active_count)
+    inactive_ids = [job.get("id") for job in jobs if not is_active_job(job)]
+    kept_inactive_ids = set(inactive_ids[-keep_inactive:]) if keep_inactive else set()
+    return [
+        job
+        for job in jobs
+        if is_active_job(job) or job.get("id") in kept_inactive_ids
+    ]
 
 
 def write_jobs(jobs):
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    JOBS_FILE.write_text(json.dumps(cleanup_job_history(jobs), ensure_ascii=False, indent=2), encoding="utf-8")
+    with job_store_lock():
+        kept_jobs = cleanup_job_history(jobs)
+        kept_object_ids = {id(job) for job in kept_jobs}
+        for job in jobs:
+            if id(job) not in kept_object_ids:
+                remove_job_artifacts(job)
+        atomic_write_json(JOBS_FILE, kept_jobs)
+
+
+def read_queue_settings():
+    with job_store_lock():
+        try:
+            payload = json.loads(QUEUE_SETTINGS_FILE.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return {"concurrencyLimit": DEFAULT_CONCURRENCY_LIMIT}
+        except (json.JSONDecodeError, TypeError):
+            return {"concurrencyLimit": DEFAULT_CONCURRENCY_LIMIT}
+        return {"concurrencyLimit": clamp_concurrency_limit(payload.get("concurrencyLimit"))}
+
+
+def persist_concurrency_limit(value):
+    with job_store_lock():
+        limit = clamp_concurrency_limit(value)
+        atomic_write_json(QUEUE_SETTINGS_FILE, {"concurrencyLimit": limit})
+        return limit
+
+
+def concurrency_limit_for_message(message=None):
+    message = message or {}
+    if message.get("concurrencyLimit") is not None:
+        return persist_concurrency_limit(message.get("concurrencyLimit"))
+    return read_queue_settings()["concurrencyLimit"]
 
 
 def update_job(job_id, updates):
-    jobs = read_jobs()
-    for job in jobs:
-        if job.get("id") == job_id:
-            job.update(updates)
-            break
-    write_jobs(jobs)
+    with job_store_lock():
+        jobs = read_jobs()
+        for job in jobs:
+            if job.get("id") == job_id:
+                job.update(updates)
+                break
+        write_jobs(jobs)
 
 
-def is_process_running(pid):
+def parse_iso_datetime(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except Exception:
+        return None
+
+
+def filetime_to_datetime(filetime):
+    ticks = (int(filetime.dwHighDateTime) << 32) + int(filetime.dwLowDateTime)
+    if not ticks:
+        return None
+    try:
+        return datetime.fromtimestamp(ticks / 10_000_000 - 11_644_473_600)
+    except Exception:
+        return None
+
+
+def windows_process_info(pid):
     if not pid:
-        return False
+        return {"exists": False}
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return {"exists": False}
+
+    if os.name != "nt":
+        return {"exists": True}
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [ctypes.wintypes.DWORD, ctypes.wintypes.BOOL, ctypes.wintypes.DWORD]
+    kernel32.OpenProcess.restype = ctypes.wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
+    kernel32.CloseHandle.restype = ctypes.wintypes.BOOL
+    kernel32.GetProcessTimes.argtypes = [
+        ctypes.wintypes.HANDLE,
+        ctypes.POINTER(ctypes.wintypes.FILETIME),
+        ctypes.POINTER(ctypes.wintypes.FILETIME),
+        ctypes.POINTER(ctypes.wintypes.FILETIME),
+        ctypes.POINTER(ctypes.wintypes.FILETIME),
+    ]
+    kernel32.GetProcessTimes.restype = ctypes.wintypes.BOOL
+    kernel32.QueryFullProcessImageNameW.argtypes = [
+        ctypes.wintypes.HANDLE,
+        ctypes.wintypes.DWORD,
+        ctypes.wintypes.LPWSTR,
+        ctypes.POINTER(ctypes.wintypes.DWORD),
+    ]
+    kernel32.QueryFullProcessImageNameW.restype = ctypes.wintypes.BOOL
+
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return tasklist_process_info(pid)
+
+    try:
+        created = ctypes.wintypes.FILETIME()
+        exited = ctypes.wintypes.FILETIME()
+        kernel = ctypes.wintypes.FILETIME()
+        user = ctypes.wintypes.FILETIME()
+        created_at = None
+        if kernel32.GetProcessTimes(handle, ctypes.byref(created), ctypes.byref(exited), ctypes.byref(kernel), ctypes.byref(user)):
+            created_at = filetime_to_datetime(created)
+
+        size = ctypes.wintypes.DWORD(32768)
+        image_buffer = ctypes.create_unicode_buffer(size.value)
+        image_path = None
+        if kernel32.QueryFullProcessImageNameW(handle, 0, image_buffer, ctypes.byref(size)):
+            image_path = image_buffer.value
+
+        return {
+            "exists": True,
+            "pid": pid,
+            "imagePath": image_path,
+            "name": Path(image_path).name if image_path else None,
+            "createdAt": created_at,
+        }
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def tasklist_process_info(pid):
+    if not pid:
+        return {"exists": False}
     result = subprocess.run(
-        ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+        ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         text=True,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
-    return str(pid) in result.stdout
+    output = result.stdout or ""
+    if str(pid) not in output:
+        return {"exists": False}
+    first_line = output.splitlines()[0].strip()
+    name = None
+    if first_line.startswith('"'):
+        parts = [part.strip('"') for part in first_line.split('","')]
+        name = parts[0].strip('"') if parts else None
+    else:
+        name = first_line.split()[0] if first_line else None
+    return {
+        "exists": True,
+        "pid": pid,
+        "imagePath": name,
+        "name": name,
+        "createdAt": None,
+    }
 
 
-def terminate_process(pid):
+def process_info(pid):
+    try:
+        return windows_process_info(pid)
+    except Exception:
+        return tasklist_process_info(pid)
+
+
+def normalized_path(value):
+    if not value:
+        return None
+    return os.path.normcase(os.path.abspath(str(value)))
+
+
+def sync_job_exit_code(job):
+    if job.get("exitCode") is not None:
+        return True
+    exit_path_value = job.get("exitPath")
+    if not exit_path_value:
+        return False
+    try:
+        exit_path = Path(exit_path_value)
+        if not exit_path.exists():
+            return False
+        text = exit_path.read_text(encoding="utf-8").strip()
+        if not text:
+            return False
+        job["exitCode"] = int(text)
+        return True
+    except Exception:
+        return False
+
+
+def process_matches_job(job, info):
+    image_path = info.get("imagePath") or info.get("name")
+    expected_executable = job.get("runnerExecutable")
+    if expected_executable and image_path:
+        if os.path.isabs(str(image_path)):
+            if normalized_path(image_path) != normalized_path(expected_executable):
+                return False
+        elif Path(image_path).name.lower() != Path(expected_executable).name.lower():
+            return False
+    elif image_path:
+        image_name = Path(image_path).name.lower()
+        if image_name not in RUNNER_PROCESS_NAMES:
+            return False
+
+    created_at = info.get("createdAt")
+    expected_created_at = parse_iso_datetime(job.get("runnerCreatedAt")) or parse_iso_datetime(job.get("startedAt"))
+    if created_at and expected_created_at:
+        delta = abs((created_at - expected_created_at).total_seconds())
+        if delta > PROCESS_START_TOLERANCE_SECONDS:
+            return False
+
+    return True
+
+
+def is_process_running(pid, job=None):
+    if job and sync_job_exit_code(job):
+        return False
+    info = process_info(pid)
+    if not info.get("exists"):
+        return False
+    if job and not process_matches_job(job, info):
+        return False
+    return True
+
+
+def terminate_process(pid, job=None):
     if not pid:
         return False
+    if job and not is_process_running(pid, job):
+        return True
     result = subprocess.run(
         ["taskkill", "/PID", str(pid), "/T", "/F"],
         stdout=subprocess.PIPE,
@@ -757,7 +1261,7 @@ def terminate_process(pid):
         text=True,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
-    return result.returncode == 0 or not is_process_running(pid)
+    return result.returncode == 0 or not is_process_running(pid, job)
 
 
 def elapsed_text(started_at, finished_at=None):
@@ -923,17 +1427,11 @@ def parse_progress(job):
         "duration": job.get("duration"),
     }
     progress_path_value = job.get("progressPath")
-    exit_path_value = job.get("exitPath")
     download_dir_value = job.get("downloadDir")
     progress_path = Path(progress_path_value) if progress_path_value else None
-    exit_path = Path(exit_path_value) if exit_path_value else None
     download_dir = Path(download_dir_value) if download_dir_value else None
 
-    if exit_path and exit_path.exists() and job.get("exitCode") is None:
-        try:
-            job["exitCode"] = int(exit_path.read_text(encoding="utf-8").strip())
-        except Exception:
-            pass
+    sync_job_exit_code(job)
 
     if progress_path and progress_path.exists():
         try:
@@ -1029,9 +1527,15 @@ def parse_progress(job):
     return progress_info
 
 
-def get_status():
+@job_store_transaction
+def get_status(message=None):
+    cleanup_expired_auth_files()
+    cleanup_stale_runner_specs()
     jobs = read_jobs()
     changed = False
+    for persisted_job in jobs:
+        if migrate_persisted_job_cookie(persisted_job):
+            changed = True
     for job in jobs:
         if job.get("status") == "queued":
             job["running"] = False
@@ -1039,7 +1543,6 @@ def get_status():
             job["elapsedText"] = elapsed_text(job.get("queuedAt") or job.get("createdAt"))
             continue
 
-        running = is_process_running(job.get("pid"))
         persisted_before = {
             key: job.get(key)
             for key in [
@@ -1059,6 +1562,7 @@ def get_status():
             ]
         }
         progress = parse_progress(job)
+        running = is_process_running(job.get("pid"), job)
         job["running"] = running
         job["currentFragment"] = progress["currentFragment"]
         job["totalFragments"] = progress["totalFragments"]
@@ -1096,6 +1600,7 @@ def get_status():
                 job["status"] = "finished"
                 job["percent"] = job["percent"] if job["percent"] is not None else 100
                 job["phase"] = "finished"
+                remove_job_auth(job)
             else:
                 job["status"] = "failed"
                 job["phase"] = "failed"
@@ -1105,6 +1610,7 @@ def get_status():
         elif job.get("status") == "finished":
             job["phase"] = "finished"
             job["percent"] = job["percent"] if job["percent"] is not None else 100
+            remove_job_auth(job)
         elif job.get("status") == "failed":
             job["phase"] = "failed"
         elif job.get("status") == "stopped":
@@ -1117,17 +1623,22 @@ def get_status():
             job["errorSummary"] = error["summary"]
             job["nextAction"] = error["nextAction"]
             job["retryable"] = error["retryable"]
+            if maybe_enqueue_impersonation_retry(jobs, job, error):
+                changed = True
 
         if any(job.get(key) != value for key, value in persisted_before.items()):
             changed = True
-    if schedule_jobs(jobs):
+    concurrency_limit = concurrency_limit_for_message(message)
+    if schedule_jobs(jobs, concurrency_limit):
         changed = True
     if changed:
         write_jobs(jobs)
-    return {"ok": True, "jobs": [public_job(job) for job in reversed(jobs[-8:])]}
+    return {"ok": True, "jobs": [public_job(job) for job in projected_status_jobs(jobs)]}
 
 
+@job_store_transaction
 def clear_jobs():
+    get_status()
     jobs = read_jobs()
     keep = []
     for job in jobs:
@@ -1135,6 +1646,20 @@ def clear_jobs():
             keep.append(job)
         else:
             remove_job_artifacts(job)
+    write_jobs(keep)
+    return {"ok": True, "cleared": len(jobs) - len(keep)}
+
+
+@job_store_transaction
+def clear_completed_jobs():
+    get_status()
+    jobs = read_jobs()
+    keep = []
+    for job in jobs:
+        if job.get("status") in TERMINAL_JOB_STATUSES:
+            remove_job_artifacts(job)
+        else:
+            keep.append(job)
     write_jobs(keep)
     return {"ok": True, "cleared": len(jobs) - len(keep)}
 
@@ -1150,6 +1675,13 @@ def forwarded_headers(message):
         "accept": "Accept",
         "accept-language": "Accept-Language",
         "cookie": "Cookie",
+        "priority": "Priority",
+        "sec-ch-ua": "Sec-CH-UA",
+        "sec-ch-ua-mobile": "Sec-CH-UA-Mobile",
+        "sec-ch-ua-platform": "Sec-CH-UA-Platform",
+        "sec-fetch-dest": "Sec-Fetch-Dest",
+        "sec-fetch-mode": "Sec-Fetch-Mode",
+        "sec-fetch-site": "Sec-Fetch-Site",
     }
     forwarded = {}
     for raw_name, raw_value in headers.items():
@@ -1158,6 +1690,94 @@ def forwarded_headers(message):
         if name in allowed and value:
             forwarded[allowed[name]] = value
     return forwarded
+
+
+def request_headers_without_cookie(message):
+    headers = message.get("requestHeaders")
+    if not isinstance(headers, dict):
+        return headers
+    return {
+        name: value
+        for name, value in headers.items()
+        if str(name).strip().lower() != "cookie"
+    }
+
+
+def persist_job_auth(job_id, message):
+    headers = message.get("requestHeaders")
+    if not isinstance(headers, dict):
+        return None
+    cookie = next(
+        (value for name, value in headers.items() if str(name).strip().lower() == "cookie" and value),
+        None,
+    )
+    if not cookie:
+        return None
+    auth_path = LOG_DIR / f"auth-{sanitize_component(job_id, 'job')}.json"
+    atomic_write_json(auth_path, {
+        "cookie": str(cookie),
+        "expiresAt": time.time() + JOB_AUTH_TTL_SECONDS,
+    })
+    return str(auth_path)
+
+
+def load_job_auth(job):
+    value = job.get("authPath")
+    if not value:
+        return {}
+    path = Path(value)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if float(payload.get("expiresAt") or 0) <= time.time():
+            path.unlink(missing_ok=True)
+            return {}
+        cookie = payload.get("cookie")
+        return {"cookie": str(cookie)} if cookie else {}
+    except Exception:
+        return {}
+
+
+def request_with_job_auth(job, request=None):
+    merged = json.loads(json.dumps(request or job.get("request") or job, ensure_ascii=False))
+    auth_headers = load_job_auth(job)
+    if auth_headers:
+        headers = merged.get("requestHeaders")
+        if not isinstance(headers, dict):
+            headers = {}
+        headers.update(auth_headers)
+        merged["requestHeaders"] = headers
+    return merged
+
+
+def migrate_persisted_job_cookie(job):
+    request = job.get("request")
+    if not isinstance(request, dict):
+        return False
+    headers = request.get("requestHeaders")
+    if not isinstance(headers, dict):
+        return False
+
+    cookie_values = [
+        value
+        for name, value in headers.items()
+        if str(name).strip().lower() == "cookie" and value
+    ]
+    sanitized = {
+        name: value
+        for name, value in headers.items()
+        if str(name).strip().lower() != "cookie"
+    }
+    if len(sanitized) == len(headers):
+        return False
+
+    request["requestHeaders"] = sanitized
+    if cookie_values and job.get("status") != "finished" and not job.get("authPath"):
+        auth_path = persist_job_auth(job.get("id"), {
+            "requestHeaders": {"cookie": cookie_values[0]},
+        })
+        if auth_path:
+            job["authPath"] = auth_path
+    return True
 
 
 def retryable_download_request(message):
@@ -1177,8 +1797,11 @@ def retryable_download_request(message):
         "downloadDir",
         "concurrencyLimit",
         "downloadSpeedProfile",
+        "browserImpersonation",
     ]
     request = {key: message.get(key) for key in allowed if key in message}
+    if "requestHeaders" in request:
+        request["requestHeaders"] = request_headers_without_cookie(message)
     return json.loads(json.dumps(request, ensure_ascii=False))
 
 
@@ -1197,7 +1820,7 @@ def build_download_command(message):
     output_template = f"{title} - %(id)s.%(ext)s"
 
     command = [
-        "yt-dlp",
+        *ytdlp_base_command(),
         "--progress",
         "--newline",
         "--no-color",
@@ -1223,6 +1846,8 @@ def build_download_command(message):
         "-o",
         output_template,
     ]
+    if should_use_impersonation(message):
+        append_generic_impersonation_args(command)
     format_selector = ytdlp_format_selector(message)
     if format_selector:
         command.extend(["-f", format_selector])
@@ -1233,6 +1858,8 @@ def build_download_command(message):
         headers.setdefault("Origin", origin)
     if isinstance(user_agent, str) and user_agent.strip():
         command.extend(["--user-agent", user_agent.strip()])
+    if headers.get("Referer"):
+        command.extend(["--referer", headers["Referer"]])
     for name, value in headers.items():
         command.extend(["--add-header", f"{name}: {value}"])
     command.append(url)
@@ -1262,8 +1889,9 @@ def new_job_id():
 def new_download_job(message, retry_of=None):
     prepared = build_download_command(message)
     created_at = now_iso()
+    job_id = new_job_id()
     job = {
-        "id": new_job_id(),
+        "id": job_id,
         "pid": None,
         "status": "queued",
         "phase": "queued",
@@ -1290,15 +1918,19 @@ def new_download_job(message, retry_of=None):
         "queuedAt": created_at,
         "startedAt": None,
         "finishedAt": None,
+        "concurrencyLimit": clamp_concurrency_limit(message.get("concurrencyLimit")),
         "request": retryable_download_request(message),
     }
+    auth_path = persist_job_auth(job_id, message)
+    if auth_path:
+        job["authPath"] = auth_path
     if retry_of:
         job["retryOf"] = retry_of
     return job
 
 
 def launch_job(job):
-    request = job.get("request") or job
+    request = request_with_job_auth(job)
     prepared = build_download_command(request)
     command = prepared["command"]
     log(f"Starting: {loggable_command(command)}")
@@ -1310,19 +1942,25 @@ def launch_job(job):
     exit_path = LOG_DIR / f"exit-{stamp}-{safe_job_id}.txt"
     spec_path = LOG_DIR / f"job-{stamp}-{safe_job_id}.json"
     runner_path = Path(__file__).with_name("yt_dlp_runner.py")
-    spec_path.write_text(json.dumps({
+    atomic_write_json(spec_path, {
         "command": command,
         "progressPath": str(progress_path),
         "exitPath": str(exit_path),
-        "env": effective_env(),
-    }, ensure_ascii=False), encoding="utf-8")
-    process = subprocess.Popen(
-        [sys.executable, str(runner_path), str(spec_path)],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        stdin=subprocess.DEVNULL,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
+    })
+    try:
+        process = subprocess.Popen(
+            [sys.executable, str(runner_path), str(spec_path)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            env=effective_env(),
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except Exception:
+        spec_path.unlink(missing_ok=True)
+        raise
+    runner_info = process_info(process.pid)
+    runner_created_at = runner_info.get("createdAt")
 
     job.update({
         "pid": process.pid,
@@ -1345,6 +1983,9 @@ def launch_job(job):
         "progressPath": str(progress_path),
         "exitPath": str(exit_path),
         "specPath": str(spec_path),
+        "runnerExecutable": sys.executable,
+        "runnerPath": str(runner_path),
+        "runnerCreatedAt": runner_created_at.isoformat(timespec="seconds") if runner_created_at else None,
         "startedAt": now_iso(),
         "finishedAt": None,
         "lastError": None,
@@ -1354,7 +1995,7 @@ def launch_job(job):
 
 
 def running_job_count(jobs):
-    return sum(1 for job in jobs if job.get("status") == "running" and is_process_running(job.get("pid")))
+    return sum(1 for job in jobs if job.get("status") == "running" and is_process_running(job.get("pid"), job))
 
 
 def schedule_jobs(jobs, concurrency_limit=None):
@@ -1384,7 +2025,7 @@ def remove_job_artifacts(job):
         log_root = LOG_DIR.resolve()
     except Exception:
         return
-    for key in ["progressPath", "exitPath", "specPath"]:
+    for key in ["progressPath", "exitPath", "specPath", "authPath"]:
         value = job.get(key)
         if not value:
             continue
@@ -1398,6 +2039,52 @@ def remove_job_artifacts(job):
             pass
 
 
+def remove_job_auth(job):
+    value = job.pop("authPath", None)
+    if not value:
+        return
+    try:
+        path = Path(value).resolve()
+        log_root = LOG_DIR.resolve()
+        if log_root in [path.parent, *path.parents] and path.is_file():
+            path.unlink()
+    except Exception:
+        pass
+
+
+def cleanup_expired_auth_files():
+    try:
+        paths = list(LOG_DIR.glob("auth-*.json"))
+    except Exception:
+        return
+    now = time.time()
+    for path in paths:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if float(payload.get("expiresAt") or 0) <= now:
+                path.unlink(missing_ok=True)
+        except Exception:
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
+def cleanup_stale_runner_specs(minimum_age_seconds=60):
+    try:
+        paths = list(LOG_DIR.glob("job-*.json"))
+    except Exception:
+        return
+    cutoff = time.time() - minimum_age_seconds
+    for path in paths:
+        try:
+            if path.stat().st_mtime <= cutoff:
+                path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+@job_store_transaction
 def cancel_job(message):
     job_id = message.get("jobId")
     jobs = read_jobs()
@@ -1416,7 +2103,7 @@ def cancel_job(message):
         elif status in {"running", "stopping"}:
             job["status"] = "stopping"
             job["phase"] = "stopping"
-            stopped = terminate_process(job.get("pid"))
+            stopped = terminate_process(job.get("pid"), job)
             if stopped:
                 job.update({
                     "status": "stopped",
@@ -1429,12 +2116,49 @@ def cancel_job(message):
                 job["running"] = True
         else:
             return {"ok": False, "error": "Job is not active."}
-        schedule_jobs(jobs, message.get("concurrencyLimit"))
+        schedule_jobs(jobs, concurrency_limit_for_message(message))
         write_jobs(jobs)
         return {"ok": True, "jobId": job_id, "status": job.get("status")}
     return {"ok": False, "error": "Job not found."}
 
 
+def retry_request_for_job(job):
+    request = request_with_job_auth(job)
+    if not isinstance(request, dict):
+        return {}
+    retry_request = json.loads(json.dumps(request, ensure_ascii=False))
+    error = classify_error(job.get("lastError"), job.get("exitCode"))
+    if error["category"] == "impersonation-required":
+        retry_request["browserImpersonation"] = True
+    return retry_request
+
+
+def maybe_enqueue_impersonation_retry(jobs, job, error=None):
+    error = error or classify_error(job.get("lastError"), job.get("exitCode"))
+    if error["category"] != "impersonation-required":
+        return False
+    request = job.get("request")
+    if not isinstance(request, dict):
+        return False
+    if request.get("browserImpersonation"):
+        return False
+    if job.get("autoRetryJobId"):
+        return False
+
+    retry_request = retry_request_for_job(job)
+    if not retry_request.get("browserImpersonation"):
+        return False
+
+    new_job = new_download_job(retry_request, retry_of=job.get("id"))
+    new_job["autoRetryReason"] = "impersonation-required"
+    job["autoRetryJobId"] = new_job["id"]
+    job["autoRetryReason"] = "impersonation-required"
+    jobs.append(new_job)
+    remove_job_auth(job)
+    return True
+
+
+@job_store_transaction
 def retry_job(message):
     job_id = message.get("jobId")
     jobs = read_jobs()
@@ -1446,14 +2170,17 @@ def retry_job(message):
         request = job.get("request")
         if not isinstance(request, dict):
             return {"ok": False, "error": "Job does not have a retry request."}
+        request = retry_request_for_job(job)
         new_job = new_download_job(request, retry_of=job_id)
+        remove_job_auth(job)
         jobs.append(new_job)
-        schedule_jobs(jobs, message.get("concurrencyLimit") or request.get("concurrencyLimit"))
+        schedule_jobs(jobs, concurrency_limit_for_message(message))
         write_jobs(jobs)
         return {"ok": True, "jobId": new_job["id"], "status": new_job.get("status"), "pid": new_job.get("pid")}
     return {"ok": False, "error": "Job not found."}
 
 
+@job_store_transaction
 def retry_failed_jobs(message=None):
     message = message or {}
     jobs = read_jobs()
@@ -1466,11 +2193,13 @@ def retry_failed_jobs(message=None):
         request = job.get("request")
         if not isinstance(request, dict):
             continue
+        request = retry_request_for_job(job)
         new_job = new_download_job(request, retry_of=job.get("id"))
+        remove_job_auth(job)
         jobs.append(new_job)
         created.append(new_job)
     if created:
-        schedule_jobs(jobs, message.get("concurrencyLimit"))
+        schedule_jobs(jobs, concurrency_limit_for_message(message))
         write_jobs(jobs)
     return {"ok": True, "created": len(created), "jobs": [public_job(job) for job in created]}
 
@@ -1486,20 +2215,23 @@ def discover_media(message):
     deps = get_deps()
 
     command = [
-        "yt-dlp",
+        *ytdlp_base_command(),
         "--ignore-config",
         "--dump-single-json",
         "--skip-download",
         "--ignore-errors",
         "--no-warnings",
     ]
+    if should_use_impersonation(message):
+        append_generic_impersonation_args(command)
     if deps.get("ffmpeg", {}).get("installed") and deps.get("ffmpeg", {}).get("path"):
         command.extend(["--ffmpeg-location", deps["ffmpeg"]["path"]])
-    if isinstance(referer, str) and referer.startswith(("http://", "https://")):
-        command.extend(["--referer", referer])
-        parsed_referer = urlparse(referer)
+    effective_referer = headers.get("Referer") or referer
+    if isinstance(effective_referer, str) and effective_referer.startswith(("http://", "https://")):
+        command.extend(["--referer", effective_referer])
+        parsed_referer = urlparse(effective_referer)
         origin = f"{parsed_referer.scheme}://{parsed_referer.netloc}"
-        headers.setdefault("Referer", referer)
+        headers.setdefault("Referer", effective_referer)
         headers.setdefault("Origin", origin)
     if isinstance(user_agent, str) and user_agent.strip():
         command.extend(["--user-agent", user_agent.strip()])
@@ -1578,11 +2310,13 @@ def download_speed_profile(value):
     return profiles.get(key, profiles["balanced"])
 
 
+@job_store_transaction
 def start_download(message):
+    concurrency_limit = concurrency_limit_for_message(message)
     job = new_download_job(message)
     jobs = read_jobs()
     jobs.append(job)
-    schedule_jobs(jobs, message.get("concurrencyLimit"))
+    schedule_jobs(jobs, concurrency_limit)
     write_jobs(jobs)
 
     return {
@@ -1601,6 +2335,11 @@ def start_download(message):
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--scheduler-tick":
+        time.sleep(0.25)
+        get_status()
+        return
+
     try:
         message = read_message()
         if message is None:
@@ -1629,13 +2368,15 @@ def main():
         elif kind == "retry-failed":
             send_message(retry_failed_jobs(message))
         elif kind == "status":
-            send_message(get_status())
+            send_message(get_status(message))
         elif kind == "diagnostics":
             send_message(get_diagnostics(message))
         elif kind == "pick-folder":
             send_message(pick_folder(message))
-        elif kind in {"clear-jobs", "clear-completed"}:
+        elif kind == "clear-jobs":
             send_message(clear_jobs())
+        elif kind == "clear-completed":
+            send_message(clear_completed_jobs())
         else:
             send_message({"ok": False, "error": f"Unknown message type: {kind}"})
     except Exception as error:
