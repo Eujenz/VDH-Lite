@@ -503,6 +503,15 @@ class NativeHostFormatSortingTests(unittest.TestCase):
 
         self.assertEqual([item["id"] for item in formats], ["av1", "hevc", "avc"])
 
+    def test_format_choices_include_codec_bitrate_and_fps(self):
+        choices = host.normalize_format_choices([
+            {"id": "av1-1080", "height": 1080, "tbr": 2135, "fps": 60, "vcodec": "av01", "acodec": "none", "ext": "webm"},
+        ])
+
+        self.assertIn("AV1", choices[1]["label"])
+        self.assertIn("2135 kbps", choices[1]["label"])
+        self.assertIn("60fps", choices[1]["label"])
+
 
 class NativeHostSchedulerTests(unittest.TestCase):
     def test_scheduler_tick_refreshes_status_after_runner_finishes(self):

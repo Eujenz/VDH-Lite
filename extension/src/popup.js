@@ -706,6 +706,17 @@ function formatChoiceLabel(choice) {
   return parts.join(" | ") || tr("label.discoveredFormat");
 }
 
+function formatMetadataLabel(format) {
+  const parts = [format.id, format.height ? `${format.height}P` : "", format.ext?.toUpperCase() || ""];
+  const codec = String(format.vcodec || "").toLowerCase().split(".", 1)[0];
+  const codecLabels = { av01: "AV1", av1: "AV1", hev1: "HEVC", hvc1: "HEVC", hevc: "HEVC", h265: "HEVC", avc1: "AVC1", avc: "AVC1", h264: "AVC1" };
+  if (codecLabels[codec]) parts.push(codecLabels[codec]);
+  if (format.tbr || format.abr) parts.push(`${format.tbr || format.abr} kbps`);
+  if (format.fps) parts.push(`${format.fps}fps`);
+  if (format.acodec && format.acodec !== "none") parts.push(format.acodec);
+  return parts.filter(Boolean).join(" | ");
+}
+
 function preferredDiscoveryUrl(group, item, tab) {
   return [group.pageUrl, item?.originUrl, tab?.url, item?.url].find(isHttpUrl) || item?.url || "";
 }
@@ -1019,10 +1030,7 @@ function showCandidateDetails(group, job) {
       `- ${tr("details.formats")}: ${group.formats?.length || 0}`
     );
     for (const format of (group.formats || []).slice(0, 8)) {
-      const label = [format.id, format.height ? `${format.height}P` : "", format.ext, format.vcodec, format.acodec]
-        .filter(Boolean)
-        .join(" | ");
-      lines.push(`  - ${label}`);
+      lines.push(`  - ${formatMetadataLabel(format)}`);
     }
   }
 

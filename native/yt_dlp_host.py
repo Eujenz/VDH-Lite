@@ -542,6 +542,23 @@ def format_label(fmt):
         parts.append("Format")
     if fmt.get("ext"):
         parts.append(str(fmt["ext"]).upper())
+    codec = str(fmt.get("vcodec") or "").lower().split(".", 1)[0]
+    codec_labels = {
+        "av01": "AV1",
+        "av1": "AV1",
+        "hev1": "HEVC",
+        "hvc1": "HEVC",
+        "hevc": "HEVC",
+        "h265": "HEVC",
+        "avc1": "AVC1",
+        "avc": "AVC1",
+        "h264": "AVC1",
+    }
+    if codec in codec_labels:
+        parts.append(codec_labels[codec])
+    bitrate = fmt.get("tbr") or (fmt.get("abr") if format_has_audio(fmt) else None)
+    if bitrate:
+        parts.append(f"{bitrate:g} kbps")
     if fmt.get("fps"):
         parts.append(f"{fmt['fps']:g}fps")
     if fmt.get("formatNote"):
@@ -559,21 +576,24 @@ def normalize_format_choices(formats):
         "source": "yt-dlp",
     }]
 
-    heights = {}
+    height_formats = {}
     audio_formats = []
     for fmt in formats:
         if not isinstance(fmt, dict):
             continue
         height = fmt.get("height")
         if height and format_has_video(fmt):
-            heights[height] = max(heights.get(height, 0) or 0, fmt.get("tbr") or 0)
+            current = height_formats.get(height)
+            if current is None or format_sort_key(fmt) > format_sort_key(current):
+                height_formats[height] = fmt
         if format_has_audio(fmt) and not format_has_video(fmt):
             audio_formats.append(fmt)
 
-    for height in sorted(heights.keys(), reverse=True)[:8]:
+    for height in sorted(height_formats.keys(), reverse=True)[:8]:
+        best_format = height_formats[height]
         choices.append({
             "id": f"height-{height}",
-            "label": f"{height}P from yt-dlp formats",
+            "label": f"{format_label(best_format)} from yt-dlp formats",
             "quality": f"{height}P",
             "kind": "video",
             "height": height,
