@@ -717,6 +717,24 @@ function formatMetadataLabel(format) {
   return parts.filter(Boolean).join(" | ");
 }
 
+function formatChoicesFromFormats(formats) {
+  return (Array.isArray(formats) ? formats : [])
+    .filter((format) => format?.id && format?.vcodec && format.vcodec !== "none")
+    .slice(0, 8)
+    .map((format) => {
+      const hasAudio = format.acodec && format.acodec !== "none";
+      return {
+        id: `format-${format.id}`,
+        label: formatMetadataLabel(format),
+        quality: format.height ? `${format.height}P` : "Video",
+        kind: "video",
+        formatId: format.id,
+        selector: hasAudio ? format.id : `${format.id}+ba/b`,
+        source: "yt-dlp"
+      };
+    });
+}
+
 function preferredDiscoveryUrl(group, item, tab) {
   return [group.pageUrl, item?.originUrl, tab?.url, item?.url].find(isHttpUrl) || item?.url || "";
 }
@@ -753,7 +771,13 @@ function applyDiscoveryToGroup(group) {
     group.host = describeUrl(downloadItem.url).host || group.host;
   }
 
-  const choices = Array.isArray(media?.formatChoices) ? media.formatChoices : [];
+  const formats = Array.isArray(media?.formats) ? media.formats : [];
+  const discoveredChoices = Array.isArray(media?.formatChoices) ? media.formatChoices : [];
+  const fallbackChoices = formatChoicesFromFormats(formats);
+  const hasOnlyBestChoice = discoveredChoices.length === 1 && discoveredChoices[0]?.id === "best";
+  const choices = fallbackChoices.length && (discoveredChoices.length === 0 || hasOnlyBestChoice)
+    ? fallbackChoices
+    : discoveredChoices;
   if (choices.length) {
     group.qualityOptions = choices.map((choice) => ({
       item: downloadItem,
