@@ -30,8 +30,12 @@ VDH Lite stores local user settings such as download directory and popup prefere
 
 VDH Lite keeps a direct browser download fallback for URLs that can be downloaded without the native host.
 
+## cookies
+
+VDH Lite reads cookies only for the exact media or webpage URL the user chooses to discover or download. Matching cookies may be forwarded locally to the native host so authenticated media requests behave like the browser request. Cookies are never substituted across domains, are not uploaded to VDH Lite servers, are excluded from persistent job history, and any temporary native-host credential file becomes unusable after 15 minutes and is deleted during native-host maintenance.
+
 ## Data Handling Summary
 
 VDH Lite does not upload detected media URLs, browsing history, downloaded files, or logs to project servers.
 
-Detected URLs are used locally to show candidates and to start user-requested downloads through the native host.
+Detected URLs and matching request metadata are used locally to show candidates and to start user-requested downloads through the native host.

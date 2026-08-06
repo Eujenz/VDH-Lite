@@ -117,7 +117,7 @@ Expose a richer native status payload:
 ```json
 {
   "ok": true,
-  "hostVersion": "1.0.0",
+  "hostVersion": "1.1.0",
   "installRoot": "%LOCALAPPDATA%\\VDH Lite\\NativeHost",
   "ytDlp": {
     "installed": true,

@@ -1,4 +1,9 @@
 {
+  "scripts": {
+    "test": "powershell -ExecutionPolicy Bypass -File scripts/test-all.ps1",
+    "test:cookie": "node tests/service_worker_cookie_test.mjs",
+    "test:ui": "node tests/ui-harness/smoke.mjs"
+  },
   "devDependencies": {
     "playwright": "^1.60.0"
   }

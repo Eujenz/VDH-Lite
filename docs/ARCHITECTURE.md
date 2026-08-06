@@ -11,12 +11,17 @@ Chrome extension
 Native host
   native/yt_dlp_host.py
   native/yt_dlp_runner.py
+  native/extension-ids.json
   native/install-native-host.ps1
 ```
 
 The extension runs in Chrome's Manifest V3 environment. It can inspect the active tab, run content scripts, observe media-like requests, and display the popup UI. It cannot execute Python, `yt-dlp`, or `ffmpeg` directly.
 
 The native host is a local Windows program registered through Chrome Native Messaging. It receives JSON messages from the extension, validates them, starts `yt-dlp`, stores job state, and returns dependency/download status.
+
+Each `sendNativeMessage` call starts a separate host process. Native job mutations therefore acquire a Windows cross-process lock for the complete read-modify-write transaction. `jobs.json` and queue settings are written through a same-directory temporary file followed by atomic replacement.
+
+Cookie values are never stored in persistent job history. Authenticated queued jobs use a separate credential file that becomes unusable after 15 minutes and is deleted during native-host maintenance. Runner specifications do not serialize the browser process environment and are deleted immediately after the runner reads them.
 
 ## Runtime Flow
 
@@ -46,6 +51,8 @@ install.bat
 uninstall.bat
 ```
 
+The public native installer bundle must retain `native/extension-ids.json` so the generated Native Messaging manifest includes the published Chrome Web Store origin even when the extension source tree is not present.
+
 The native host installer writes runtime files under:
 
 ```text
@@ -71,6 +78,7 @@ The public product posture should therefore be:
 - `nativeMessaging` for local `yt-dlp` handoff
 - `storage` for local settings
 - `downloads` for direct browser download fallback
+- `cookies` for matching cookies belonging to the exact URL selected for discovery or download
 - `webRequest` for media candidate detection
 - `scripting` for DOM/performance/media probing
 

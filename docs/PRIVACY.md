@@ -12,12 +12,15 @@ The extension may inspect:
 - media-like network requests on HTTP/HTTPS pages
 - page media elements and performance entries
 - user settings such as download directory and quality choice
+- request headers and cookies belonging to the exact media URL selected by the user
 
 ## Data Stored Locally
 
 VDH Lite stores settings in Chrome extension storage.
 
 The native host stores recent job state and diagnostic logs under the user's local application data folder.
+
+Persistent job history does not store Cookie header values or the browser's complete process environment. When an authenticated queued download or immediate retry needs a cookie, the native host stores it in a separate local credential file that becomes unusable after 15 minutes and is deleted during native-host maintenance. The runner specification is deleted as soon as the runner reads it.
 
 Examples:
 
@@ -31,6 +34,8 @@ Examples:
 VDH Lite does not upload browsing history, detected URLs, logs, or downloaded files to a VDH Lite server.
 
 The native host calls local command-line tools such as `yt-dlp` and `ffmpeg`. Those tools may contact the media website selected by the user to resolve and download media.
+
+VDH Lite only attaches cookies that belong to the actual URL being discovered or downloaded. It does not copy cookies from the referring page to a different media domain.
 
 ## Native Host
 
@@ -46,7 +51,7 @@ The native host validates the request and executes local commands using argument
 
 ## Permissions
 
-VDH Lite requests the permissions needed for its current media detector. HTTP/HTTPS host permissions are required because Chrome's `webRequest` API needs declared host access for the request patterns it observes.
+VDH Lite requests the permissions needed for its current media detector. HTTP/HTTPS host permissions are required because Chrome's `webRequest` API needs declared host access for the request patterns it observes. The `cookies` permission is used only to reproduce an authenticated request for the exact URL selected by the user.
 
 ## DRM And Protected Content
 

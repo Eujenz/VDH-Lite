@@ -34,12 +34,15 @@ VDH-Lite/
 - Groups related sources into media cards with per-item quality/format choices and filter chips.
 - Parses HLS master playlists when possible and shows quality labels like `1080P` and `720P`.
 - Uses native `yt-dlp --dump-single-json` discovery to load real title, thumbnail, and format options when available.
+- Supports popup UI language switching between English and Traditional Chinese.
 - Starts local `yt-dlp` through Chrome Native Messaging.
 - Uses resilient `yt-dlp` defaults for continuing downloads, retries, fragment retries, retry sleep, socket timeout, merge format, and Windows-safe filenames.
 - Parses structured `yt-dlp --progress-template` progress before falling back to human-readable output.
-- Shows download phase, speed, ETA, selected quality/format, final output path, and classified failure guidance.
+- Shows download phase, speed, ETA, duration when available, selected quality/format, final output path, and classified failure guidance.
 - Checks local `yt-dlp`, `ffmpeg`, and native host health from the popup.
 - Stores recent local download jobs with queue state, cancel/retry controls, concurrency limit, and completed-history cleanup.
+- Serializes native job mutations through a cross-process lock and atomic job-store replacement so popup polling cannot overwrite download, retry, cancel, or cleanup operations.
+- Forwards cookies only for the exact selected media URL. Cookie values stay out of persistent job history; temporary authentication files become unusable after 15 minutes and are deleted by native-host maintenance.
 
 ## Current Status
 
@@ -51,11 +54,13 @@ Today's work moved VDH Lite toward a lightweight browser companion with a strong
 - Candidate filtering now covers detected, active, finished, and failed states so the popup stays scannable as jobs accumulate.
 - Native progress now uses `yt-dlp --progress-template`, phase detection, and final path reporting so downloads can show `downloading`, `merging`, `remuxing`, `reencoding`, `finalizing`, or `finished`.
 - Discovery now calls `yt-dlp --dump-single-json` so format choices can come from yt-dlp metadata instead of URL guesses only.
+- Download jobs now persist duration metadata from discovery or yt-dlp's printed `duration` field when available, and the popup shows that duration in job cards and details.
+- The popup now includes a language selector for English and Traditional Chinese. The selected language is stored with the popup settings.
 - The native downloader now applies VidBee-style stable defaults such as `--continue`, retries, fragment retries, retry sleep, socket timeout, safe Windows filenames, filename trimming, and merge output fallback.
 - Jobs now support queueing, cancel, retry, a default concurrency limit of 2, and completed/failed/stopped history cleanup while preserving active work.
 - Failed jobs now carry classified guidance for cases such as auth/cookies, geo block, disk full, permission denied, FFmpeg issues, transient network errors, stalls, and user cancellation.
 
-Chrome extension installation was not available on the current device during this pass. UI/UX validation therefore uses the local harness in `tests/ui-harness`, which runs the popup as a normal web page with mocked Chrome extension APIs.
+UI/UX validation uses the local harness in `tests/ui-harness`, which runs the popup as a normal web page with mocked Chrome extension APIs.
 
 ```powershell
 node tests\ui-harness\serve.mjs
@@ -73,7 +78,20 @@ Optional smoke test:
 node tests\ui-harness\smoke.mjs
 ```
 
-The smoke test requires Playwright. Real unpacked-extension installation, Chrome Native Messaging E2E, and site-by-site download QA are still the next validation checkpoint.
+Run the complete Python, JavaScript, concurrency, Cookie-isolation, UI, and release workflow suite with:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\test-all.ps1
+```
+
+The smoke test requires Playwright. Native host sync can be checked separately with the installer and a native-message `ping`. Real site-by-site download QA remains a separate validation checkpoint because CDN behavior varies.
+
+### Known Operational Notes
+
+- The native host used by Chrome is an installed runtime copy under `%LOCALAPPDATA%\VDH Lite\NativeHost`, not the repo file directly. After changing files under `native/`, rerun `install.bat` or `native\install-native-host.ps1`.
+- After changing files under `extension/`, reload the unpacked extension from `chrome://extensions/` so Chrome picks up popup and service worker JavaScript changes.
+- Recent job status prioritizes the runner exit file and verifies the saved runner process identity, so Windows PID reuse should not leave jobs stuck in `finalizing` or `stopping`.
+- Some CDN HLS URLs can look unusual, including playlists that produce image-like outputs or omit reliable container duration. Avoid broad source-blocking rules without site-specific validation.
 
 ## Development Setup
 
@@ -88,6 +106,14 @@ C:\Users\LeeWei\Documents\VDH-Lite\extension
 ```
 
 6. Open the extension popup and click `Test yt-dlp`.
+
+When updating an existing development install, rerun:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\native\install-native-host.ps1
+```
+
+Then reload the unpacked extension in `chrome://extensions/`.
 
 The development manifest key pins the extension ID:
 
@@ -116,8 +142,10 @@ Run:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\check-release-readiness.ps1
-powershell -ExecutionPolicy Bypass -File .\scripts\package-extension.ps1 -Store
+powershell -ExecutionPolicy Bypass -File .\scripts\package-extension.ps1 -StoreBootstrap
 ```
+
+Use `-StoreBootstrap` only for the first unpublished Chrome Web Store dashboard upload. After adding the dashboard Item ID to `native/extension-ids.json` and replacing the manifest key with the dashboard public key, run the formal `-Store` package command. Formal packaging is blocked until those IDs agree.
 
 The extension zip is written to `dist/`.
 

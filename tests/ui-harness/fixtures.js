@@ -34,6 +34,18 @@ const hlsVariantItem = {
   timeStamp: 990
 };
 
+const hlsSegmentItem = {
+  url: "https://cdn.example.test/hls/sample-cooking-stream/720p_004.ts?token=segment",
+  type: "xmlhttprequest",
+  contentType: "video/mp2t",
+  quality: "720P",
+  originUrl: baseTab.url,
+  requestHeaders: {
+    referer: baseTab.url
+  },
+  timeStamp: 995
+};
+
 const mp4Item = {
   url: "https://media.example.test/downloads/sample-cooking-stream-720p.mp4",
   type: "media",
@@ -62,7 +74,7 @@ export const SCENARIOS = {
   detected: {
     label: "Detected media",
     tab: baseTab,
-    items: [hlsItem, hlsVariantItem, mp4Item, audioItem],
+    items: [hlsItem, hlsSegmentItem, hlsVariantItem, mp4Item, audioItem],
     jobs: []
   },
   active: {
